@@ -21,6 +21,9 @@ dependencies:
   app_claw:
     path: ../../../components/common/app_claw
 
+  claw_manager:
+    path: ../../../components/claw_modules/claw_manager
+
   app_config:
     path: ../components/app_config
 
@@ -50,4 +53,14 @@ dependencies:
   esp_video:
     path: ../../../components/common/esp_video
     matches:
+    - if: $CONFIG{ESP_BOARD_DEV_CAMERA_SUPPORT} == True
+
+  lua_module_camera:
+    path: ../../../components/lua_modules/lua_module_camera
+    rules:
+    - if: $CONFIG{ESP_BOARD_DEV_CAMERA_SUPPORT} == True
+
+  espressif/esp-tflite-micro:
+    version: ">=1.0.0"
+    rules:
     - if: $CONFIG{ESP_BOARD_DEV_CAMERA_SUPPORT} == True

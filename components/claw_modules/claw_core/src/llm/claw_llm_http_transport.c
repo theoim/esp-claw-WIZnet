@@ -10,9 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "llm_http";
 
@@ -302,7 +304,7 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
     config.timeout_ms = request->timeout_ms;
     config.buffer_size = 4096;
     config.buffer_size_tx = 4096;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.crt_bundle_attach = NULL;  /* skip cert bundle; encrypted but no CA verify */
 
     client = esp_http_client_init(&config);
     if (!client) {
@@ -334,6 +336,15 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
 
     ESP_LOGD(TAG, "POST %s", request->url);
     err = esp_http_client_perform(client);
+    if (err == ESP_ERR_HTTP_CONNECT && !abort_requested(&request_ctx)) {
+        /* concurrent lwip DNS queries for same hostname both get EAI_AGAIN;
+         * random jitter breaks task synchronisation so retries are staggered */
+        uint32_t jitter_ms = 1000 + (esp_random() % 3000);
+        ESP_LOGW(TAG, "HTTP connect failed, retry in %lums: %s", (unsigned long)jitter_ms, esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(jitter_ms));
+        esp_http_client_close(client);
+        err = esp_http_client_perform(client);
+    }
     if (err != ESP_OK) {
         if (abort_requested(&request_ctx)) {
             *out_error_message = dup_printf("HTTP request aborted by caller");

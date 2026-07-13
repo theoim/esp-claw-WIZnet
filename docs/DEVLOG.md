@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-07-13 (S-트랙 13차) — 결함 2건 추가 (부팅 브릭 + 미설정 크래시)
+
+**결함 A — /fatfs 무한 증가로 부팅 브릭.**
+테스트 대화 누적 후 재부팅 시 `/fatfs total=532480 used=532480`(100%) →
+`mkdir /fatfs/memory|router_rules|scheduler` 실패 → `app_claw_start(290) 세션 매니저
+설정 실패` → `ESP_ERROR_CHECK` abort → 부팅루프. 첫 런은 여유 있었으나 세션 히스토리+
+메모리 파일이 storage 파티션(0x773000 len 0x8d000)을 채움. `erase_region` 후 used=180224로
+회복 → 누적 데이터가 원인 확정. **미해결(완화만)**: retention/GC 정책 필요. storage 파티션
+증설 또는 세션/메모리 상한+청소. 제품화 필수 항목.
+
+**결함 B — 미설정 상태 SPI LLM_REQ → NULL mutex assert 크래시. (수정함)**
+erase로 LLM 설정(backend/base_url/model/key) 소거 → `app_claw: will start without
+claw_core` → agent manager 미초기화(`s_mgr.mutex` NULL). 이 상태에서 Pico가 LLM_REQ(0x05)
+보내면 `on_spi_rx → claw_agent_mgr_submit_root_text → claw_agent_mgr_lock →
+xQueueTakeMutexRecursive(NULL)` assert → abort 루프.
+- 수정1 `claw_agent_mgr.c submit_root_text`: 락 전 `!s_mgr.initialized||!s_mgr.mutex`면
+  `ESP_ERR_INVALID_STATE` 반환 (크래시 대신 정상 에러). 업스트림 가치 있는 방어.
+- 수정2 `main.c on_spi_rx`: submit 실패 시 즉시 `LLM_RESP ok=false` 전송 → Pico가 90s
+  타임아웃 안 기다리고 즉시 폴백.
+
+원래 쫓던 "릴레이 정답 미전달"(12차)은 claw_core 복구(LLM 재설정) 후 재개.
+
+---
+
 ## 2026-07-13 (S-트랙 12차) — 릴레이 정답 미전달 결함 발견
 
 **S-트랙 시나리오 2 첫 런에서 기능 결함 포착** (S_TRACK_TEST.md 절차).

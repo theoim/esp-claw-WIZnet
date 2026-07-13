@@ -724,6 +724,13 @@ esp_err_t claw_agent_mgr_submit_root_text(const char *text,
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* Guard against use before init (e.g. LLM unconfigured → claw_core not
+     * started). Without this, claw_agent_mgr_lock() asserts on a NULL mutex
+     * and aborts the whole device when an SPI LLM_REQ arrives. */
+    if (!s_mgr.initialized || !s_mgr.mutex) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     claw_agent_mgr_lock();
     root = claw_agent_mgr_find_locked(CLAW_AGENT_MGR_ROOT_AGENT_ID);
     if (!root || !root->core) {

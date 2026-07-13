@@ -557,7 +557,19 @@ static void on_spi_rx(spi_claw_cmd_t cmd, uint8_t seq, const uint8_t *payload,
                 }
             }
         } else {
-            ESP_LOGE(TAG, "LLM_REQ: submit failed %s", esp_err_to_name(err));
+            /* Agent unavailable (e.g. LLM unconfigured → claw_core not started).
+             * Reply ok=false immediately so the Pico falls back at once instead
+             * of waiting out its 90s relay timeout. */
+            ESP_LOGE(TAG, "LLM_REQ: submit failed %s — sending ok=false",
+                     esp_err_to_name(err));
+            char nack[128];
+            int nlen = snprintf(nack, sizeof(nack),
+                "{\"session_id\":\"%s\",\"ok\":false,\"text\":\"agent unavailable\"}",
+                session_id);
+            if (nlen > 0 && nlen < (int)sizeof(nack)) {
+                spi_wiz_send(s_spi_wiz, SPI_CMD_LLM_RESP,
+                             (const uint8_t *)nack, (uint16_t)nlen);
+            }
         }
         cJSON_Delete(root);
         break;

@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-07-13 (S-트랙 12차) — 릴레이 정답 미전달 결함 발견
+
+**S-트랙 시나리오 2 첫 런에서 기능 결함 포착** (S_TRACK_TEST.md 절차).
+
+**증상**: WiFi 없이 부팅 → TG "안녕" → ESP 에이전트가 **정답 완성**
+(`completion request=1 status=done raw=안녕하세요! 저는 ESP-Claw...`), 프록시 경유
+Groq 200 2회 성공. 그러나 **Pico는 LLM_RESP(0x43)를 수신 못 함** → 90s 타임아웃 →
+로컬 Groq 폴백 → 401(로컬 API 키 미설정) → 유저에게 "죄송합니다, 오류" 전송.
+즉 정답이 있는데 못 돌려주고 망가진 폴백으로 에러 응답.
+
+**계측 추가** (`main.c spi_llm_resp_task`):
+- `receive_root_for` 반환 직후 `err` + `resp.text` 길이 로그
+- LLM_RESP 전송 직후 `req/ok/slen` 로그
+
+**배제된 가설**:
+- SPI 송신 충돌: `spi_wiz_send`는 `tx_mutex`로 직렬화, rx_task도 동일 mutex → 충돌 아님.
+- 경쟁 소비자 절도: 정상 채널 경로(event_router)는 `SKIP_RESPONSE_QUEUE`로 제출 →
+  `response_queue`를 안 씀. match_any 소비자 없음.
+- master→slave 전송 불가: 0x06/0x08/0x44 모두 Pico 정상 수신 → 전송로 정상.
+
+**남은 두 갈래** (다음 런 로그로 판별):
+1. `receive err=ESP_OK text_len=N` + `LLM_RESP sent` 로그가 뜨는데도 Pico 미수신
+   → SPI 전송 타이밍 문제(Core0가 프록시 blocking 중 상태 등). 
+2. `receive err=ESP_ERR_TIMEOUT text_len=-1` → 완성 응답이 `response_queue`로 안 들어감
+   /엉뚱한 request_id. claw_core 라우팅 문제. 완성은 됐는데 큐 push 실패거나 id 불일치.
+
+설계상 flags=0 제출 → 완성 시 `claw_core_agent_loop.c:477` push → `receive_for(id)`가
+꺼내야 정상. 실제 안 됨 → 다음 런에서 위 로그로 확정.
+
+**별건**: 로컬 Groq 폴백이 401 — 로컬 `llm_api_key` 미설정. 릴레이 성공 시엔 무관하나,
+릴레이 실패 대비 폴백이 무의미한 상태. 웹 대시보드에서 키 설정하거나 폴백 정책 재검토 필요.
+
 ## 2026-06-23 (11차)
 
 ### Pico TLS handshake/write 무한 루프 수정 + relay timeout 원인 분석

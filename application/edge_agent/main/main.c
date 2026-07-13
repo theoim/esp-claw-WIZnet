@@ -416,7 +416,12 @@ static void spi_llm_resp_task(void *arg)
     claw_core_response_t resp = {0};
     /* Timeout must exceed worst-case LLM path: 25s WiFi timeout + ~5s retry delay + 25s WiFi
      * retry + 20s SPI proxy = ~75s. Set to 85s, safely under Pico relay timeout (90s). */
+    ESP_LOGI(TAG, "spi_llm_resp: waiting for req=%u (session=%s)",
+             (unsigned)a->request_id, a->session_id);
     esp_err_t err = claw_agent_mgr_receive_root_for(a->request_id, &resp, 85000);
+    ESP_LOGI(TAG, "spi_llm_resp: req=%u receive err=%s text_len=%d",
+             (unsigned)a->request_id, esp_err_to_name(err),
+             (resp.text ? (int)strlen(resp.text) : -1));
 
     cJSON *root = cJSON_CreateObject();
     if (root) {
@@ -433,6 +438,9 @@ static void spi_llm_resp_task(void *arg)
             uint16_t slen = (uint16_t)strlen(s);
             if (slen > SPI_CLAW_MAX_CHUNK - 1) slen = SPI_CLAW_MAX_CHUNK - 1;
             spi_wiz_send(s_spi_wiz, SPI_CMD_LLM_RESP, (const uint8_t *)s, slen);
+            ESP_LOGI(TAG, "spi_llm_resp: LLM_RESP sent req=%u ok=%d slen=%u",
+                     (unsigned)a->request_id,
+                     (err == ESP_OK && resp.text && resp.text[0]), slen);
             free(s);
         }
         cJSON_Delete(root);

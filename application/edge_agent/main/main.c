@@ -612,6 +612,11 @@ static void spi_status_task(void *arg)
         spi_wiz_send(s_spi_wiz, SPI_CMD_ESP_STATUS,
                      (const uint8_t *)status_json,
                      (uint16_t)(sizeof(status_json) - 1));
+        /* S-track soak instrumentation: free heap should stay flat over 24h;
+         * min_ever catches transient dips that preceded the OOM crashes in
+         * docs/DEVLOG.md (10th/11th entries). */
+        ESP_LOGI(TAG, "[health] free_heap=%" PRIu32 " min_ever=%" PRIu32,
+                 esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
         vTaskDelay(pdMS_TO_TICKS(20000));
     }
 }

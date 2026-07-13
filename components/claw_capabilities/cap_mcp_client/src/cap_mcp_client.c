@@ -10,15 +10,25 @@
 #include "cJSON.h"
 #include "claw_cap.h"
 #include "mdns.h"
+#include "esp_log.h"
 
 #include "cap_mcp_client_internal.h"
+
+static const char *TAG = "cap_mcp_client";
 
 static esp_err_t cap_mcp_client_group_init(void)
 {
     esp_err_t err = mdns_init();
 
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
+    if (err == ESP_ERR_INVALID_STATE) {
+        /* Already initialized — reuse existing instance */
+    } else if (err != ESP_OK) {
+        /* mDNS init failed (e.g. no network interface yet in wired mode).
+         * mDNS discovery will be unavailable, but mcp_call with explicit
+         * server_url still works.  Treat as non-fatal. */
+        ESP_LOGW(TAG, "mdns_init failed (%s) — mDNS discovery disabled",
+                 esp_err_to_name(err));
+        return ESP_OK;
     }
 
     mdns_hostname_set("esp-claw");

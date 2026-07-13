@@ -72,6 +72,13 @@ static void s_rx_task(void *arg)
         if (xSemaphoreTake(h->irq_sem, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+
+        /* Hold tx_mutex across the entire header+payload read so that
+         * spi_device_transmit is never called concurrently from spi_wiz_send.
+         * Concurrent access to the same device handle causes the IDF assert
+         * ret_trans == trans_desc at spi_master.c:1310. */
+        xSemaphoreTake(h->tx_mutex, portMAX_DELAY);
+
         /* Read fixed-length header */
         spi_transaction_t th = {
             .length    = SPI_CLAW_HDR_SIZE * 8,
@@ -80,18 +87,21 @@ static void s_rx_task(void *arg)
         };
         if (spi_device_transmit(h->spi_dev, &th) != ESP_OK) {
             ESP_LOGW(TAG, "Header RX failed");
+            xSemaphoreGive(h->tx_mutex);
             continue;
         }
 
         spi_claw_hdr_t *hdr = (spi_claw_hdr_t *)hdr_buf;
         if (hdr->magic[0] != SPI_CLAW_MAGIC_0 || hdr->magic[1] != SPI_CLAW_MAGIC_1) {
             ESP_LOGW(TAG, "Bad magic: 0x%02X 0x%02X", hdr->magic[0], hdr->magic[1]);
+            xSemaphoreGive(h->tx_mutex);
             continue;
         }
 
         uint16_t plen = hdr->len;
         if (plen > SPI_CLAW_MAX_CHUNK) {
             ESP_LOGW(TAG, "Payload too large: %u", plen);
+            xSemaphoreGive(h->tx_mutex);
             continue;
         }
 
@@ -102,6 +112,7 @@ static void s_rx_task(void *arg)
             if (!pay_buf) {
                 ESP_LOGE(TAG, "OOM for payload %u bytes", plen);
                 pay_cap = 0;
+                xSemaphoreGive(h->tx_mutex);
                 continue;
             }
             pay_cap = plen;
@@ -115,9 +126,12 @@ static void s_rx_task(void *arg)
             };
             if (spi_device_transmit(h->spi_dev, &tp) != ESP_OK) {
                 ESP_LOGW(TAG, "Payload RX failed");
+                xSemaphoreGive(h->tx_mutex);
                 continue;
             }
         }
+
+        xSemaphoreGive(h->tx_mutex);
 
         /* Verify CRC: zero crc field, compute, restore */
         uint8_t recv_crc = hdr_buf[offsetof(spi_claw_hdr_t, crc)];

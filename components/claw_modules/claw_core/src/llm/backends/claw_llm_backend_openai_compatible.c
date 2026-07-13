@@ -245,6 +245,11 @@ static esp_err_t build_chat_body(const openai_compatible_backend_ctx_t *ctx,
             cJSON_Delete(messages);
             return ESP_ERR_NO_MEM;
         }
+        /* 'is_error' is Anthropic-specific; OpenAI/Groq rejects it in tool messages. */
+        cJSON *role_j = cJSON_GetObjectItem(dup, "role");
+        if (cJSON_IsString(role_j) && strcmp(role_j->valuestring, "tool") == 0) {
+            cJSON_DeleteItemFromObject(dup, "is_error");
+        }
         cJSON_AddItemToArray(messages, dup);
     }
 

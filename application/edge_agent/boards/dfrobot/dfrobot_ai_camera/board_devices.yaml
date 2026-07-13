@@ -102,3 +102,116 @@ devices:
         frequency: SDMMC_FREQ_DEFAULT
     peripherals:
       - name: spi_sdcard
+
+
+I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[spi_slave] bad magic: 0xCA 0xCA
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...
+[I][wiz_claw_tls] TLS ok [TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256]
+[I][wiz_claw_http] HTTP POST /botxxxxx/getUpdates → 404 (TLS)
+[E][wiz_claw_tg] Telegram API returned ok=false
+[I][wiz_claw_tg] polling offset=0
+[I][wiz_claw_net] DNS query: api.telegram.org
+[I][wiz_claw_net] DNS ok: api.telegram.org -> 149.154.166.110
+[W][wiz_claw_tls] CA 번들 없음 ? 서버 미검증 (개발 모드). port/wiz-claw/tools/gen_ca_bundle.py 실행 후 wiz_claw_ca_bundle.h를 채우세요.
+[I][wiz_claw_tls] TLS init ok sn=0
+[I][wiz_claw_http] TCP connected sn=0 149.154.166.110:443
+[I][wiz_claw_tls] TLS handshake api.telegram.org:443 ...

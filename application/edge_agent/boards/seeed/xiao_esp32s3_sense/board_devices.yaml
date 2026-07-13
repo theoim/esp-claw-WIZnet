@@ -1,0 +1,41 @@
+version: 1.0.0
+# Devices for Seeed Studio XIAO ESP32-S3 Sense
+devices:
+
+  # OV3660 over DVP 8-bit — pins from XIAO ESP32-S3 Sense schematic
+  # XCLK=IO10, PCLK=IO13, VSYNC=IO38, HREF=IO47
+  # Y2=IO15, Y3=IO16, Y4=IO17, Y5=IO18, Y6=IO14, Y7=IO12, Y8=IO11, Y9=IO48
+  - name: camera
+    type: camera
+    sub_type: dvp
+    version: default
+    config:
+      dvp_config:
+        reset_io: -1
+        pwdn_io: -1
+        vsync_io: 38
+        de_io: 47
+        pclk_io: 13
+        xclk_io: 10
+        xclk_freq: 20000000
+        data_width: CAM_CTLR_DATA_WIDTH_8
+        data_io:
+          data_io_0: 15
+          data_io_1: 17
+          data_io_2: 18
+          data_io_3: 16
+          data_io_4: 14
+          data_io_5: 12
+          data_io_6: 11
+          data_io_7: 48
+          data_io_8: -1
+          data_io_9: -1
+          data_io_10: -1
+          data_io_11: -1
+          data_io_12: -1
+          data_io_13: -1
+          data_io_14: -1
+          data_io_15: -1
+    peripherals:
+      - name: i2c_master
+        frequency: 100000

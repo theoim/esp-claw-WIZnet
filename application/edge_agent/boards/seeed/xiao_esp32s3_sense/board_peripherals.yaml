@@ -1,0 +1,13 @@
+version: 1.0.0
+# Peripherals for Seeed Studio XIAO ESP32-S3 Sense
+peripherals:
+
+  # Camera SCCB (I2C) — IO39=SCL, IO40=SDA from schematic
+  - name: i2c_master
+    type: i2c
+    role: master
+    config:
+      port: 0
+      pins:
+        sda: 40
+        scl: 39

@@ -39,6 +39,7 @@
 #include "claw_paths.h"
 #include "claw_agent_mgr.h"
 #include "cJSON.h"
+#include "llm/claw_llm_http_transport.h"
 #if CONFIG_APP_CLAW_CAP_LUA
 #include "cap_lua.h"
 #endif
@@ -71,6 +72,109 @@ static app_claw_config_t *s_claw_config;
 static spi_wiz_handle_t s_spi_wiz;
 
 static volatile bool s_pong_received = false;
+
+/* ── SPI HTTP proxy (ESP32 → Pico → Ethernet → Groq) ─────────────────
+ * Used when WiFi is unavailable or failed. Pico forwards the HTTP POST
+ * over Ethernet and returns the response via SPI.
+ */
+static SemaphoreHandle_t s_http_proxy_sem      = NULL;
+static SemaphoreHandle_t s_spi_proxy_lock      = NULL;  /* serialise concurrent proxy calls */
+static char             *s_http_proxy_resp_body = NULL;
+static size_t            s_http_proxy_resp_cap  = 0;
+static size_t            s_http_proxy_resp_len  = 0;
+static int               s_http_proxy_resp_status = 0;
+
+static esp_err_t spi_http_proxy_fn(const char *url, const char *auth_header,
+                                    const char *body_json,
+                                    char **out_body, int *out_status)
+{
+    if (!s_spi_wiz || !s_http_proxy_sem || !s_spi_proxy_lock) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Serialise concurrent proxy calls: wait up to 30 s for any in-flight proxy
+     * to complete before starting a new one.  The previous 0-timeout caused
+     * the async claw_memory extraction task to fail immediately when the main
+     * LLM request was already using the proxy, propagating back as claw_core
+     * failure and triggering a spurious ok=false LLM_RESP to the Pico. */
+    if (xSemaphoreTake(s_spi_proxy_lock, pdMS_TO_TICKS(30000)) != pdTRUE) {
+        ESP_LOGW("spi_proxy", "proxy busy timeout (concurrent call)");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t result = ESP_ERR_TIMEOUT;
+    size_t body_len = strlen(body_json);
+
+    /* send metadata packet */
+    char meta[768];
+    int mlen = snprintf(meta, sizeof(meta),
+                        "{\"url\":\"%s\",\"auth\":\"%s\",\"body_len\":%zu}",
+                        url ? url : "",
+                        auth_header ? auth_header : "",
+                        body_len);
+    if (mlen <= 0 || (size_t)mlen >= sizeof(meta)) {
+        result = ESP_ERR_INVALID_SIZE;
+        goto unlock;
+    }
+
+    /* Reset response buffer and drain stale semaphore BEFORE sending the
+     * request. Pico may respond (e.g. 500 on CRC error) before BODY_END
+     * arrives; if we reset and drain AFTER sending, we overwrite the valid
+     * response and have to wait 20s for the next spi_status_task cycle to
+     * unblock Pico's stuck spi_write_blocking call. */
+    free(s_http_proxy_resp_body);
+    s_http_proxy_resp_body   = NULL;
+    s_http_proxy_resp_cap    = 0;
+    s_http_proxy_resp_len    = 0;
+    s_http_proxy_resp_status = 0;
+    xSemaphoreTake(s_http_proxy_sem, 0);  /* drain stale from previous call */
+
+    ESP_LOGI("spi_proxy", "HTTP_REQ url=%.60s body=%zu bytes", url ? url : "", body_len);
+    result = spi_wiz_send(s_spi_wiz, SPI_CMD_HTTP_REQ,
+                          (const uint8_t *)meta, (uint16_t)mlen);
+    if (result != ESP_OK) { goto unlock; }
+    vTaskDelay(pdMS_TO_TICKS(20));  /* Pico needs time to parse HTTP_REQ JSON + malloc body buf */
+
+    /* send body in chunks */
+    {
+        const char *ptr = body_json;
+        size_t remaining = body_len;
+        while (remaining > 0) {
+            uint16_t n = (uint16_t)(remaining > SPI_CLAW_MAX_CHUNK
+                                     ? SPI_CLAW_MAX_CHUNK : remaining);
+            result = spi_wiz_send(s_spi_wiz, SPI_CMD_HTTP_BODY,
+                                  (const uint8_t *)ptr, n);
+            if (result != ESP_OK) { goto unlock; }
+            ptr += n;
+            remaining -= n;
+            vTaskDelay(pdMS_TO_TICKS(15));
+        }
+    }
+
+    /* signal body complete */
+    result = spi_wiz_send(s_spi_wiz, SPI_CMD_HTTP_BODY_END, NULL, 0);
+    if (result != ESP_OK) { goto unlock; }
+
+    /* wait for Pico to complete HTTP POST and return response (45s).
+     * Pico TLS handshake + HTTP round-trip for large payloads (20KB+) can
+     * exceed 20s; previous timeout caused spurious proxy-fail + LLM_RESP error. */
+    if (xSemaphoreTake(s_http_proxy_sem, pdMS_TO_TICKS(45000)) != pdTRUE) {
+        ESP_LOGE("spi_proxy", "response timeout");
+        result = ESP_ERR_TIMEOUT;
+        goto unlock;
+    }
+
+    *out_status = s_http_proxy_resp_status;
+    *out_body   = s_http_proxy_resp_body;
+    s_http_proxy_resp_body = NULL;  /* transfer ownership to caller */
+    ESP_LOGI("spi_proxy", "response status=%d len=%zu",
+             *out_status, *out_body ? strlen(*out_body) : 0);
+    result = ESP_OK;
+
+unlock:
+    xSemaphoreGive(s_spi_proxy_lock);
+    return result;
+}
 
 static TaskHandle_t s_pir_task_handle = NULL;
 
@@ -310,7 +414,9 @@ static void spi_llm_resp_task(void *arg)
 {
     spi_llm_resp_arg_t *a = (spi_llm_resp_arg_t *)arg;
     claw_core_response_t resp = {0};
-    esp_err_t err = claw_agent_mgr_receive_root_for(a->request_id, &resp, 30000);
+    /* Timeout must exceed worst-case LLM path: 25s WiFi timeout + ~5s retry delay + 25s WiFi
+     * retry + 20s SPI proxy = ~75s. Set to 85s, safely under Pico relay timeout (90s). */
+    esp_err_t err = claw_agent_mgr_receive_root_for(a->request_id, &resp, 85000);
 
     cJSON *root = cJSON_CreateObject();
     if (root) {
@@ -449,6 +555,49 @@ static void on_spi_rx(spi_claw_cmd_t cmd, uint8_t seq, const uint8_t *payload,
         break;
     }
 
+    case SPI_CMD_HTTP_RESP: {
+        /* {"status":200,"body_len":N} */
+        if (!payload || len == 0 || len >= 128) { break; }
+        char js[128];
+        memcpy(js, payload, len); js[len] = '\0';
+        cJSON *root = cJSON_Parse(js);
+        if (root) {
+            cJSON *st = cJSON_GetObjectItem(root, "status");
+            cJSON *bl = cJSON_GetObjectItem(root, "body_len");
+            if (cJSON_IsNumber(st)) {
+                s_http_proxy_resp_status = (int)st->valuedouble;
+            }
+            size_t blen = cJSON_IsNumber(bl) ? (size_t)bl->valuedouble : 0;
+            if (blen > 0) {
+                free(s_http_proxy_resp_body);
+                s_http_proxy_resp_body = malloc(blen + 1);
+                s_http_proxy_resp_cap  = blen + 1;
+                s_http_proxy_resp_len  = 0;
+                if (s_http_proxy_resp_body) { s_http_proxy_resp_body[0] = '\0'; }
+            }
+            cJSON_Delete(root);
+        }
+        break;
+    }
+
+    case SPI_CMD_HTTP_RESP_BODY: {
+        if (!payload || len == 0) { break; }
+        if (s_http_proxy_resp_body &&
+            s_http_proxy_resp_len + len < s_http_proxy_resp_cap) {
+            memcpy(s_http_proxy_resp_body + s_http_proxy_resp_len, payload, len);
+            s_http_proxy_resp_len += len;
+            s_http_proxy_resp_body[s_http_proxy_resp_len] = '\0';
+        }
+        break;
+    }
+
+    case SPI_CMD_HTTP_RESP_END: {
+        if (s_http_proxy_sem) {
+            xSemaphoreGive(s_http_proxy_sem);
+        }
+        break;
+    }
+
     default:
         ESP_LOGW(TAG, "SPI unhandled cmd=0x%02X seq=%u len=%u", cmd, seq, len);
         break;
@@ -536,6 +685,18 @@ static void app_free_runtime_state(void)
 static void on_wifi_state_changed(bool connected, void *user_ctx)
 {
     (void)user_ctx;
+
+#if CONFIG_SPI_CAM_BRIDGE_ENABLE
+    if (connected) {
+        /* WiFi restored — revert to direct HTTP, proxy no longer needed */
+        claw_llm_http_set_proxy_mode(false);
+        ESP_LOGI(TAG, "WiFi restored, SPI proxy disabled");
+    } else {
+        /* WiFi lost — enable SPI proxy if Pico is present */
+        claw_llm_http_set_proxy_mode(true);
+        ESP_LOGW(TAG, "WiFi lost, SPI proxy enabled");
+    }
+#endif
 
     wifi_manager_status_t status = {0};
     wifi_manager_get_status(&status);
@@ -806,6 +967,12 @@ void app_main(void)
 #endif /* CONFIG_NETWORK_BACKEND_WIRED */
 
 #if CONFIG_SPI_CAM_BRIDGE_ENABLE
+    s_http_proxy_sem  = xSemaphoreCreateBinary();
+    ESP_ERROR_CHECK(s_http_proxy_sem ? ESP_OK : ESP_ERR_NO_MEM);
+    s_spi_proxy_lock  = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_spi_proxy_lock ? ESP_OK : ESP_ERR_NO_MEM);
+    claw_llm_http_set_spi_proxy(spi_http_proxy_fn);
+
     ESP_ERROR_CHECK(spi_wiz_create(&(spi_wiz_config_t){
         .sck_io    = CONFIG_SPI_WIZ_SCK_IO,
         .miso_io   = CONFIG_SPI_WIZ_MISO_IO,

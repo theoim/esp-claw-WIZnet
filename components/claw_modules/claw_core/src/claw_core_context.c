@@ -520,6 +520,15 @@ esp_err_t claw_core_build_iteration_context(claw_core_state_t *core,
                                             provider->name,
                                             request_start_contexts[i].content);
                 if (err != ESP_OK) {
+                    /* No warning was logged here previously — silent ESP_FAIL
+                     * caused by cJSON_Parse OOM on heap-fragmented internal RAM
+                     * after repeated 20 KB proxy body alloc/free cycles. */
+                    ESP_LOGW(TAG,
+                             "apply cached context failed request=%" PRIu32
+                             " provider=%s err=%s",
+                             request->view.request_id,
+                             provider->name,
+                             esp_err_to_name(err));
                     goto cleanup;
                 }
                 claw_core_obs_csv_append(obs_providers_csv, obs_providers_csv_size, provider->name, true);

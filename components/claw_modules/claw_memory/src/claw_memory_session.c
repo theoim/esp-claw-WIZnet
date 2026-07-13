@@ -5,6 +5,7 @@
  */
 #include "claw_memory_internal.h"
 #include "claw_task.h"
+#include "llm/claw_llm_http_transport.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -23,7 +24,7 @@
 static const char *TAG = "claw_memory";
 
 #define CLAW_MEMORY_ASYNC_EXTRACT_QUEUE_LEN 4
-#define CLAW_MEMORY_ASYNC_EXTRACT_STACK_SIZE (6 * 1024)
+#define CLAW_MEMORY_ASYNC_EXTRACT_STACK_SIZE (12 * 1024)
 #define CLAW_MEMORY_ASYNC_EXTRACT_PRIORITY 5
 #define CLAW_MEMORY_ASYNC_EXTRACT_SWEEP_TICKS pdMS_TO_TICKS(60000)
 
@@ -287,10 +288,19 @@ static void claw_memory_async_extract_task(void *arg)
             continue;
         }
 
-        err = claw_memory_auto_extract_prepare_with_runtime(s_async_extract.runtime,
-                                                            job->user_text,
-                                                            &message_intent,
-                                                            &llm_text);
+        if (claw_llm_http_get_proxy_mode()) {
+            /* SPI proxy is active (WiFi down). Skip background extraction to
+             * avoid monopolising the SPI bus that the main LLM request needs. */
+            ESP_LOGW(TAG, "async extract: SPI proxy active, skipping (request=%" PRIu32 ")",
+                     job->request_id);
+            err = ESP_ERR_INVALID_STATE;
+            llm_text = NULL;
+        } else {
+            err = claw_memory_auto_extract_prepare_with_runtime(s_async_extract.runtime,
+                                                                job->user_text,
+                                                                &message_intent,
+                                                                &llm_text);
+        }
 
         if (s_async_extract.lock && xSemaphoreTake(s_async_extract.lock, portMAX_DELAY) == pdTRUE) {
             if (job->llm_text) {

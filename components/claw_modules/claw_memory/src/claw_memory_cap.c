@@ -399,7 +399,14 @@ static esp_err_t cap_memory_recall_execute(const char *input_json,
         return ESP_ERR_INVALID_ARG;
     }
 
-    query.limit = (size_t)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "limit"));
+    {
+        cJSON *lim = cJSON_GetObjectItem(root, "limit");
+        if (cJSON_IsNumber(lim)) {
+            query.limit = (size_t)lim->valuedouble;
+        } else if (cJSON_IsString(lim) && lim->valuestring) {
+            query.limit = (size_t)atoi(lim->valuestring);
+        }
+    }
     labels = cJSON_GetObjectItem(root, "summary_labels");
     if (cJSON_IsArray(labels)) {
         for (i = 0; i < cJSON_GetArraySize(labels) && label_count < 3; i++) {
@@ -651,7 +658,7 @@ static const claw_cap_descriptor_t s_memory_descriptors[] = {
         .kind = CLAW_CAP_KIND_CALLABLE,
         .cap_flags = CLAW_CAP_FLAG_CALLABLE_BY_LLM,
         .input_schema_json =
-            "{\"type\":\"object\",\"properties\":{\"summary_labels\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"limit\":{\"type\":\"integer\"}}}",
+            "{\"type\":\"object\",\"properties\":{\"summary_labels\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"limit\":{\"type\":[\"integer\",\"string\"]}}}",
         .execute = cap_memory_recall_execute,
     },
     {

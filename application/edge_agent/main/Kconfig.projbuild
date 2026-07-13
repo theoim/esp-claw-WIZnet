@@ -1,3 +1,67 @@
+menu "Network Backend"
+    choice NETWORK_BACKEND
+        prompt "Network backend"
+        default NETWORK_BACKEND_WIFI
+        config NETWORK_BACKEND_WIFI
+            bool "WiFi (default)"
+        config NETWORK_BACKEND_WIRED
+            bool "Wired via W55RP20 SPI"
+    endchoice
+endmenu
+
+menu "SPI Camera Bridge"
+    config SPI_CAM_BRIDGE_ENABLE
+        bool "Enable SPI camera bridge to Pico (JPEG via custom SPI protocol)"
+        default y if NETWORK_BACKEND_WIRED
+        default n
+        help
+            Send JPEG frames to Pico/WIZnet over a custom PING/CHUNK SPI protocol.
+            Can be combined with either WiFi or Wired network backend.
+            Camera capture (SPI_CMD_CAPTURE_REQ) requires ESP_BOARD_DEV_CAMERA_SUPPORT;
+            other bridge commands (PING/PONG, LUA_EXEC, GPIO_SET) work without camera.
+
+    if SPI_CAM_BRIDGE_ENABLE
+        config SPI_WIZ_SCK_IO
+            int "SPI SCK GPIO"
+            default 7
+        config SPI_WIZ_MISO_IO
+            int "SPI MISO GPIO"
+            default 8
+        config SPI_WIZ_MOSI_IO
+            int "SPI MOSI GPIO"
+            default 9
+        config SPI_WIZ_CS_IO
+            int "SPI CS GPIO"
+            default 1
+        config SPI_WIZ_IRQ_IO
+            int "IRQ GPIO (Pico→ESP32, active-high during slave TX)"
+            default 2
+        config SPI_WIZ_CLOCK_HZ
+            int "SPI clock Hz"
+            default 2000000
+
+        config PERSON_DETECT_ENABLE
+            bool "Enable on-device TFLite person detection"
+            default y
+            depends on ESP_BOARD_DEV_CAMERA_SUPPORT
+            help
+                Run MobileNet-based person detection (96x96 grayscale, int8) on every
+                PIR-triggered capture. If no person is detected the capture is discarded
+                and neither Vision API nor Telegram are called, saving quota and bandwidth.
+                Requires esp-tflite-micro managed component (~200 KB PSRAM tensor arena).
+
+        config PERSON_DETECT_THRESHOLD
+            int "Person detection confidence threshold (%)"
+            range 10 90
+            default 50
+            depends on PERSON_DETECT_ENABLE
+            help
+                Minimum person confidence score (0-100) required to proceed with
+                Vision API and Telegram alert. Lower values = more sensitive (more
+                false positives); higher values = stricter (may miss distant persons).
+    endif
+endmenu
+
 menu "App Config"
 
 menu "Default Wi-Fi Settings"

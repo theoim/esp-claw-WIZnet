@@ -1,0 +1,5 @@
+board: xiao_esp32s3_sense
+chip: esp32s3
+version: 1.0.0
+description: "Seeed Studio XIAO ESP32-S3 Sense with OV3660 DVP camera"
+manufacturer: "Seeed Studio"

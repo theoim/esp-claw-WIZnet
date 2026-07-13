@@ -10,15 +10,42 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "llm_http";
 
 #define CLAW_LLM_HTTP_RB_INITIAL_CAP 4096
+
+static claw_llm_spi_proxy_fn_t s_spi_proxy_fn   = NULL;
+static volatile bool            g_use_spi_proxy  = false;
+/* Serialises concurrent WiFi-TLS LLM calls (claw_core + async-memory-extract).
+ * Two simultaneous TLS handshakes exhaust the mbedtls ECC heap and crash with
+ * LoadProhibited inside mbedtls_mpi_core_cond_assign. Initialised in
+ * claw_llm_http_set_spi_proxy(), which is always called from app_main before
+ * any LLM request can arrive. */
+static SemaphoreHandle_t        s_llm_http_mutex = NULL;
+
+void claw_llm_http_set_spi_proxy(claw_llm_spi_proxy_fn_t fn)
+{
+    s_spi_proxy_fn = fn;
+    if (!s_llm_http_mutex) {
+        s_llm_http_mutex = xSemaphoreCreateMutex();
+    }
+}
+void claw_llm_http_set_proxy_mode(bool enabled)
+{
+    g_use_spi_proxy = enabled && (s_spi_proxy_fn != NULL);
+    if (!s_llm_http_mutex) {
+        s_llm_http_mutex = xSemaphoreCreateMutex();
+    }
+}
+bool claw_llm_http_get_proxy_mode(void)         { return g_use_spi_proxy; }
 
 typedef struct {
     char *data;
@@ -75,7 +102,13 @@ static char *sanitize_utf8_body_copy(const char *body)
     }
 
     len = strlen(body);
-    sanitized = calloc(1, len + 1);
+    /* Prefer PSRAM for the (potentially 20 KB+) sanitized copy so repeated
+     * alloc/free cycles don't fragment internal RAM and starve cJSON_Parse
+     * during context building on subsequent requests. */
+    sanitized = heap_caps_calloc(1, len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!sanitized) {
+        sanitized = calloc(1, len + 1);
+    }
     if (!sanitized) {
         return NULL;
     }
@@ -289,6 +322,54 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
         return ESP_ERR_NO_MEM;
     }
 
+    /* ── SPI proxy path ───────────────────────────────────────────────
+     * If proxy is enabled, forward request to Pico over SPI instead of
+     * sending directly via WiFi. On proxy failure, fall through to the
+     * direct HTTP path and clear the proxy flag.
+     */
+    if (g_use_spi_proxy && s_spi_proxy_fn) {
+        char *proxy_auth = build_auth_header_value(request->auth_type, request->api_key);
+        char *proxy_body = NULL;
+        int   proxy_status = 0;
+        esp_err_t perr = s_spi_proxy_fn(request->url, proxy_auth,
+                                         sanitized_body, &proxy_body, &proxy_status);
+        free(proxy_auth);
+        if (perr == ESP_OK && proxy_body) {
+            if (proxy_status == 200) {
+                out_response->status_code = proxy_status;
+                out_response->body = proxy_body;
+                free(sanitized_body);
+                return ESP_OK;
+            }
+            /* non-200 from proxy: treat as LLM API error */
+            err = ESP_FAIL;
+            *out_error_message = parse_error_message_body(proxy_body, proxy_status);
+            ESP_LOGE(TAG, "SPI proxy LLM error %d: %s",
+                     proxy_status, *out_error_message ? *out_error_message : "(null)");
+            free(proxy_body);
+            free(sanitized_body);
+            return err;
+        }
+        /* proxy transport error → fall back to direct WiFi.
+         * ESP_ERR_INVALID_STATE means proxy was busy (concurrent call):
+         * keep g_use_spi_proxy so the next request retries via proxy. */
+        free(proxy_body);
+        if (perr != ESP_ERR_INVALID_STATE) {
+            g_use_spi_proxy = false;
+            ESP_LOGW(TAG, "SPI proxy failed (%s), falling back to direct HTTP",
+                     esp_err_to_name(perr));
+        } else {
+            ESP_LOGW(TAG, "SPI proxy busy, using direct HTTP for this request");
+        }
+    }
+
+    /* Acquire the WiFi-TLS slot before opening any TLS connection.
+     * Prevents concurrent claw_core + async-memory-extract TLS handshakes
+     * from exhausting the mbedtls ECC heap and causing LoadProhibited crash. */
+    if (s_llm_http_mutex) {
+        xSemaphoreTake(s_llm_http_mutex, portMAX_DELAY);
+    }
+
     err = response_buffer_init(&buffer);
     if (err != ESP_OK) {
         *out_error_message = dup_printf("Out of memory allocating HTTP buffer");
@@ -350,10 +431,63 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
             *out_error_message = dup_printf("HTTP request aborted by caller");
             ESP_LOGW(TAG, "HTTP perform aborted: %s", esp_err_to_name(err));
             err = ESP_ERR_INVALID_STATE;
-        } else {
-            *out_error_message = dup_printf("HTTP request failed: %s", esp_err_to_name(err));
-            ESP_LOGE(TAG, "HTTP perform failed: %s", esp_err_to_name(err));
+            goto cleanup;
         }
+
+        ESP_LOGE(TAG, "HTTP perform failed: %s", esp_err_to_name(err));
+
+        /* Inline SPI proxy retry: tear down the broken WiFi client and
+         * immediately forward the same request to Pico over SPI.
+         * This lets Pico's relay (still waiting for LLM_RESP) get a valid
+         * response without the 35-second timeout. */
+        if (s_spi_proxy_fn) {
+            g_use_spi_proxy = true;
+            ESP_LOGW(TAG, "HTTP failed, retrying via SPI proxy inline");
+
+            free(auth_header_value);
+            auth_header_value = NULL;
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            client = NULL;
+            response_buffer_free(&buffer);
+
+            char *proxy_auth = build_auth_header_value(request->auth_type, request->api_key);
+            char *proxy_body = NULL;
+            int   proxy_status = 0;
+            esp_err_t perr = s_spi_proxy_fn(request->url, proxy_auth,
+                                             sanitized_body, &proxy_body, &proxy_status);
+            free(proxy_auth);
+            if (perr == ESP_OK && proxy_body) {
+                if (proxy_status == 200) {
+                    out_response->status_code = proxy_status;
+                    out_response->body = proxy_body;
+                    free(sanitized_body);
+                    if (s_llm_http_mutex) { xSemaphoreGive(s_llm_http_mutex); }
+                    return ESP_OK;
+                }
+                /* Groq returned an HTTP error (4xx/5xx) — proxy is reachable.
+                 * Keep g_use_spi_proxy: WiFi is still down. */
+                err = ESP_FAIL;
+                *out_error_message = parse_error_message_body(proxy_body, proxy_status);
+                ESP_LOGE(TAG, "SPI proxy LLM error %d: %s",
+                         proxy_status, *out_error_message ? *out_error_message : "(null)");
+                free(proxy_body);
+                free(sanitized_body);
+                if (s_llm_http_mutex) { xSemaphoreGive(s_llm_http_mutex); }
+                return err;
+            }
+            free(proxy_body);
+            /* Proxy call failed (timeout / busy / CRC error → Pico sent 500 with no body).
+             * Do NOT clear g_use_spi_proxy — WiFi is still down, proxy is still the path. */
+            *out_error_message = dup_printf("HTTP and SPI proxy both failed: %s",
+                                            esp_err_to_name(perr));
+            ESP_LOGE(TAG, "inline proxy also failed (%s)", esp_err_to_name(perr));
+            free(sanitized_body);
+            if (s_llm_http_mutex) { xSemaphoreGive(s_llm_http_mutex); }
+            return ESP_FAIL;
+        }
+
+        *out_error_message = dup_printf("HTTP request failed: %s", esp_err_to_name(err));
         goto cleanup;
     }
     if (abort_requested(&request_ctx)) {
@@ -381,9 +515,14 @@ cleanup:
     free(auth_header_value);
     free(sanitized_body);
     if (client) {
+        /* Close before cleanup: prevents LoadProhibited crash in
+         * esp_transport_destroy_foundation_transport when TLS state was
+         * corrupted by an abrupt WiFi disconnect mid-connection. */
+        esp_http_client_close(client);
         esp_http_client_cleanup(client);
     }
     response_buffer_free(&buffer);
+    if (s_llm_http_mutex) { xSemaphoreGive(s_llm_http_mutex); }
     return err;
 }
 

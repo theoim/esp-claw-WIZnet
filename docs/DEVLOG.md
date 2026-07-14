@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-07-14 (P-트랙 16차) — dead-ESP 감지(P-5) + 로컬 폴백 401 처리 (Pico 코드)
+
+15차에서 확정된 두 결함을 Pico `examples/wiz_claw_spi_host/main.c`에서 수정
+(WIZnet-PICO-C-CHIP-TEST repo, `main` 브랜치). 하드웨어 미검증 — 다음 세션에서
+시나리오 4(ESP만 다운, Pico 생존 유지) 재현으로 확인 필요.
+
+**P-5 dead-ESP 감지**: `g_esp32_last_seen_ms`를 PING/STATUS 수신마다 갱신.
+`check_esp32_alive_timeout()`을 메인 루프에서 매 iteration 호출(TG poll 5s 블로킹이라
+실질 ~5s 간격) — 마지막 수신 후 65초(STATUS 20s 주기 3회 누락 + 여유) 지나면
+`g_esp32_alive=false`로 되돌림. 이걸로 90s-latch 버그(독립급전 확정, DEVLOG 15차)
+해소: ESP가 죽으면 최대 65s 내 감지 → 이후 릴레이 즉시 스킵, 매 메시지 90s 낭비 없음.
+복귀는 기존 로직 그대로(PING/STATUS 수신 시 true).
+
+**로컬 폴백 401 처리**: `on_telegram_message`에서 로컬 폴백 진입 전
+`g_settings.llm_api_key[0] == '\0'` 체크 추가. 키 없으면 헛방 TLS 호출(항상 401) 대신
+즉시 스킵하고 원인을 명시한 메시지 전송("ESP32 연결 끊김 + 로컬 백업 미설정"). 신규
+카운터 `local_fb_unavail`을 `[health]` 라인에 추가해 구분(`local_fb`=실제 로컬 LLM
+시도, `local_fb_unavail`=키 없어 스킵).
+
+**검증 대기**: 시나리오 4 재현 시 (a) ESP 다운 후 65s 이내 `esp_alive` 0으로 전환되는
+`[health]` 라인 확인 (b) 그 이후 메시지가 즉시(수초 내) 응답되는지(로컬 키 있으면
+정상 답, 없으면 신규 메시지) — 90s 안 걸리는지가 핵심 판정 기준.
+
+---
+
 ## 2026-07-13 (S-트랙 15차) — 시나리오 4 (ESP 다운): 90s-latch 미발생, 로컬 폴백 결함 노출
 
 ESP USB 뽑아 다운시킴. **관찰: Pico도 같이 리부트됨**(`cfg flash empty→defaults`,

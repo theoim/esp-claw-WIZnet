@@ -433,9 +433,19 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
 
     ESP_LOGD(TAG, "POST %s", request->url);
     err = esp_http_client_perform(client);
-    if (err == ESP_ERR_HTTP_CONNECT && !abort_requested(&request_ctx)) {
-        /* concurrent lwip DNS queries for same hostname both get EAI_AGAIN;
-         * random jitter breaks task synchronisation so retries are staggered */
+    /* The jittered retry below exists for a specific race: two tasks (claw_core
+     * + async-memory-extract) issuing concurrent lwip DNS queries for the same
+     * hostname can both get EAI_AGAIN. That race is impossible whenever
+     * s_spi_proxy_fn is registered, because s_llm_http_mutex (taken above,
+     * near the top of this function) already serialises every call into this
+     * function in that build. So when a proxy escape hatch exists, skip this
+     * retry and fall straight through to it below: a second WiFi attempt here
+     * costs up to ~18s (jitter + a possible DNS-resolution stall — see
+     * docs/DEVLOG.md P-track 17th/18th entries) for a connection that just
+     * failed once, when the proxy path reliably lands in ~10s. Deployments
+     * without a proxy (s_spi_proxy_fn == NULL, mutex not created) keep the
+     * original retry — the EAI_AGAIN race is still possible there. */
+    if (err == ESP_ERR_HTTP_CONNECT && !abort_requested(&request_ctx) && !s_spi_proxy_fn) {
         uint32_t jitter_ms = 1000 + (esp_random() % 3000);
         ESP_LOGW(TAG, "HTTP connect failed, retry in %lums: %s", (unsigned long)jitter_ms, esp_err_to_name(err));
         vTaskDelay(pdMS_TO_TICKS(jitter_ms));

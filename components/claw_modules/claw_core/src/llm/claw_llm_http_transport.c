@@ -22,6 +22,19 @@ static const char *TAG = "llm_http";
 
 #define CLAW_LLM_HTTP_RB_INITIAL_CAP 4096
 
+/* esp_http_client's timeout_ms is a per-I/O-op (select()) timeout, not a
+ * total-request deadline — each successful read/write resets it, so a
+ * healthy connection streaming a slow completion is unaffected. It only
+ * fires when a single read or write call stalls. When an SPI proxy escape
+ * hatch is registered, cap it well below the default (CLAW_LLM_DEFAULT_TIMEOUT_MS
+ * in claw_llm_runtime.c, 25s): a stuck WiFi socket should fail fast into the
+ * already-working proxy path rather than sit for 25s+ first. Observed cost of
+ * the current 25s default: docs/DEVLOG.md S-track 14th entry (req=2, ~40s
+ * total — ~29s stuck esp_tls_conn_write + ~11s proxy round trip). With this
+ * cap the same case should land near 8s + ~11s ≈ 19s. Deployments without a
+ * proxy registered (s_spi_proxy_fn == NULL) are unaffected. */
+#define CLAW_LLM_HTTP_PROXY_FALLBACK_TIMEOUT_MS 8000u
+
 static claw_llm_spi_proxy_fn_t s_spi_proxy_fn   = NULL;
 static volatile bool            g_use_spi_proxy  = false;
 /* Serialises concurrent WiFi-TLS LLM calls (claw_core + async-memory-extract).
@@ -383,6 +396,9 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
     config.event_handler = http_event_handler;
     config.user_data = &request_ctx;
     config.timeout_ms = request->timeout_ms;
+    if (s_spi_proxy_fn && config.timeout_ms > CLAW_LLM_HTTP_PROXY_FALLBACK_TIMEOUT_MS) {
+        config.timeout_ms = CLAW_LLM_HTTP_PROXY_FALLBACK_TIMEOUT_MS;
+    }
     config.buffer_size = 4096;
     config.buffer_size_tx = 4096;
     config.crt_bundle_attach = NULL;  /* skip cert bundle; encrypted but no CA verify */

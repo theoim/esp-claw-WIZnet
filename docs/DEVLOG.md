@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-07-14 (P-트랙 17차) — req=2 40s 완화: 프록시 있을 때 WiFi 타임아웃 단축
+
+결함 ③ 재분석. 14차에서 "25s WiFi 타임아웃+재시도"로 추정했으나 실제 로그 재확인 결과
+정확한 메커니즘은 다름: `ESP_ERR_HTTP_CONNECT` 재시도(1~3s 지터)가 아니라, **POST 바디
+전송 중 `esp_tls_conn_write`가 약 29초간 멈춰 있다가 "Connection reset by peer"로 실패**
+→ 그 즉시(재시도 루프 없이) 인라인 SPI 프록시로 전환 → 프록시 자체는 ~11s. 합 ~40s.
+
+`esp_http_client_config_t.timeout_ms`는 **총 요청 데드라인이 아니라 개별 I/O(select())
+타임아웃** — 읽기/쓰기가 진행될 때마다 리셋되므로, 정상 연결에서 느린 완성 응답을 기다리는
+동안엔 전혀 영향 없다. 끊긴/불량 소켓에서 **한 번의 read/write가 멈출 때만** 발동.
+기존 기본값(`CLAW_LLM_DEFAULT_TIMEOUT_MS`, claw_llm_runtime.c, 25s)이 이 케이스의 지연
+전부.
+
+**수정** (`claw_llm_http_transport.c`): SPI 프록시가 등록돼 있을 때만
+`config.timeout_ms`를 **8초**로 캡 (`CLAW_LLM_HTTP_PROXY_FALLBACK_TIMEOUT_MS`). 이미
+동작 확인된 프록시 경로로 더 빨리 넘어가는 게 25s+ 멈춰있는 것보다 항상 낫다는 판단.
+프록시 미등록(순정 WiFi 전용 배포)엔 영향 없음 — `s_spi_proxy_fn`이 NULL이면 조건 자체가
+성립 안 함.
+
+**예상 효과**: req=2류 케이스 ~40s → ~8s(막힌 WiFi 감지) + ~11s(프록시) ≈ **19s**.
+
+**검증 대기**: 하드웨어 미확인. 다음 빌드에서 시나리오 3(WiFi 절단/복구 반복) 재실행 시
+막힌-소켓 케이스가 재현되면 왕복 시간이 19s 부근인지 확인. 부작용 확인 포인트: 정상
+WiFi 경로에서 느린 완성 응답(수 초~10초대)이 8s 캡에 걸려 조기 프록시 전환되지 않는지 —
+timeout_ms가 진짜 per-I/O인지 실측으로 재확인 필요(문서상 근거는 맞으나 esp-tls 내부
+select 적용 방식은 IDF 버전별 차이 가능).
+
+---
+
 ## 2026-07-14 (P-트랙 16차) — dead-ESP 감지(P-5) + 로컬 폴백 401 처리 (Pico 코드)
 
 15차에서 확정된 두 결함을 Pico `examples/wiz_claw_spi_host/main.c`에서 수정

@@ -932,6 +932,11 @@ void app_main(void)
     esp_log_level_set("http_reuse", ESP_LOG_WARN);
 
     ESP_LOGI(TAG, "Starting app");
+    /* Reset reason survives the USB-CDC reconnect that eats the ROM boot
+     * header, so idf_monitor can't show rst:0x.. after a reboot. Log it here
+     * to tell a real crash (PANIC/TASK_WDT/INT_WDT/BROWNOUT) from a benign
+     * host-triggered USB reset. */
+    ESP_LOGW(TAG, "[boot] reset_reason=%d", (int)esp_reset_reason());
     ESP_ERROR_CHECK(app_allocate_runtime_state());
     ESP_ERROR_CHECK(init_nvs());
     ESP_ERROR_CHECK(app_config_init());

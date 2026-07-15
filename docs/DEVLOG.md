@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-07-15 (P-트랙 20차) — heartbeat·Guardian 큐·보안·다수 견고성 (하루 요약)
+
+하드웨어 반복 테스트로 여러 결함 잡고 Guardian 차별점 첫 조각들 구현. 커밋 분산
+(ESP repo `hybrid/w55rp20`, Pico repo `main`). 핵심:
+
+**보안 (완료)**
+- 유출된 텔레그램 봇토큰 BotFather 로테이션(사용자) + 하드코딩 제거(dd42e76).
+- 근본 유출 채널 차단: `do_http_request`가 매 TG 호출마다 `/bot<token>/`을 시리얼에
+  평문 출력하던 것 → `/bot***/`로 마스킹(319f1b3). 이게 로그 붙여넣기마다 토큰 새던 원인.
+
+**heartbeat / 3-state Guardian (구현·검증)**
+- ESP `SPI_CMD_ESP_STATUS`를 하드코딩 → 실 health `{seq,up,heap,wifi,proxy}`로(E-3, c2cd63a7).
+- Pico가 파싱해 HEALTHY/DEGRADED/HUNG/DEAD 판정 + ESP 리부트 감지(seq/up 회귀)(438a9e2).
+  파싱은 Core0로(콜백 경량화, d8358d0). HUNG = STATUS는 오는데 relay 연속 타임아웃 →
+  워치독 IC가 못 잡는 케이스(프로그래머블 guardian 정당화).
+- HW 검증: esp=HEALTHY, seq 전진, heap 실값, wifi 반영. 정상.
+
+**메시지 무손실 / mid-relay 리부트 (구현)**
+- ESP가 groq 답 받은 뒤 LLM_RESP 전 리셋 → 90s 맹목 대기 + 오해성 에러였음.
+  → PING epoch로 대기 중 리부트 감지(Core1) → 즉시 정직 응답(e9e24de).
+- 메시지-무손실 큐 MVP(0f94559): mid-relay 리셋 시 메시지 보관 → ~35s 후 자동 재질의
+  1회(`on_telegram_message` 재사용). Pico RAM 전용(ESP 재부팅 견딤, Pico 재부팅은 v2 flash 큐).
+- 정직 메시지 분리(38cc0a3): ESP 도달+에러(ok=false) vs 진짜 무응답 구분 —
+  "연결 끊김" 오표기 제거.
+
+**빌드 회귀 (자책·수정)**
+- reset_reason 로그 추가하다 `app_allocate_runtime_state()` 호출을 실수로 삭제
+  → s_config NULL → `app_config_load` INVALID_ARG 부팅루프. "unused function" 경고가
+  증거였는데 오판. 복구(f5ec9732 amend). 교훈: unused-static 경고 무시 금지.
+- CRC error 반복은 stale 바이너리(불완전 빌드)였고 클린 빌드로 소멸.
+
+**"리부트" 정체 규명**
+- 대부분 `reset_reason=11`(USB) / `rst:0x15` = idf_monitor USB-CDC 재접속이 칩 리셋 →
+  디버그 아티팩트, 헤드리스엔 무관. `esp_reset_reason()` 부팅 로그로 확정(monitor가
+  ROM 헤더 놓쳐서 앱에서 직접 뽑음).
+
+**발견: esp-claw 코어 이슈 (우리 유선 스코프 밖, 기록만)**
+- 툴 검증 400: 모델이 `cap_time`/`cap_web_search` 등 request.tools에 없는 툴 호출 →
+  groq 400. 등록된 cap ↔ LLM 노출 tools 불일치.
+- **힙 손상 크래시**: `remove_free_block` TLSF assert @ `claw_cap_build_llm_tools_json →
+  cJSON_Delete`(claw_cap.c:350). crash 지점 ≠ 버그 지점(이전에 힙 손상, free가 발견).
+  매 요청 12970B 툴 JSON 재빌드 부하로 표면화. 코어 힙 버그 → HEAP_POISONING 켜야
+  범인 특정 = 별도 upstream 작업.
+- 세션 히스토리 무한 누적 + fatfs persist → 리셋해도 주제 고착. 테스트 정상화는
+  `parttool erase_partition --partition-name=storage`(NVS 보존, 세션만 클리어).
+- **입장**: 이들은 코어 결함 → 우리가 고치는 게 아니라 **Guardian이 감지·복구·완화**하는
+  대상. "불완전한 코어 위에서 시스템을 살아있게 유지"가 유선 하이브리드의 가치 증명.
+
+**우리 레이어 상태**: 릴레이/heartbeat/큐/보안 전부 정상, 어떤 crash backtrace에도 안 낌.
+유선 경로는 27KB 멀티툴·400·연속요청 다 완벽 왕복. 안정성 이슈는 전부 upstream 코어.
+
+**다음**: (1) 메시지큐 mid-relay 리셋 단독 검증(Pico 생존 유지) (2) EN 리셋선(HUNG/DEAD →
+물리 리셋) (3) v2 flash 큐(Pico 재부팅 견딤) (4) 코어 힙버그는 upstream 트랙.
+
 ## 2026-07-14 (P-트랙 19차) — 하드웨어 검증: WiFi 완전다운 시나리오 일관 10초대
 
 18차 수정(중복 재시도 스킵) 반영 빌드로 재테스트. 안테나 뽑은 채로 부팅 → STA 5회

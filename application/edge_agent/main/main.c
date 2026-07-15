@@ -73,6 +73,11 @@ static spi_wiz_handle_t s_spi_wiz;
 
 static volatile bool s_pong_received = false;
 
+/* Real WiFi STA state, mirrored from on_wifi_state_changed(). Reported in the
+ * SPI_CMD_ESP_STATUS heartbeat so the Pico guardian sees actual connectivity
+ * instead of a hardcoded value. */
+static volatile bool s_wifi_connected = false;
+
 /* ── SPI HTTP proxy (ESP32 → Pico → Ethernet → Groq) ─────────────────
  * Used when WiFi is unavailable or failed. Pico forwards the HTTP POST
  * over Ethernet and returns the response via SPI.
@@ -624,19 +629,44 @@ static void on_spi_rx(spi_claw_cmd_t cmd, uint8_t seq, const uint8_t *payload,
     }
 }
 
+/* ── Heartbeat (SPI_CMD_ESP_STATUS) ───────────────────────────────────
+ * Sent every 20s. Carries objective health the Pico guardian uses for
+ * 3-state liveness (see docs/HEARTBEAT.md, to be written):
+ *   seq  : monotonic per-send counter. Advancing seq proves this task — and
+ *          thus the RTOS scheduler at this priority — is still running. A
+ *          frozen seq while packets still arrive would indicate a stall.
+ *   up   : uptime seconds. A drop to a low value = ESP rebooted (crash/TWDT).
+ *   heap : free heap now. Collapsing heap preceded the OOM crashes in
+ *          docs/DEVLOG.md (10th/11th) — lets the guardian see it coming.
+ *   wifi : real STA state (not hardcoded).
+ *   proxy: whether the LLM transport is currently in SPI-proxy mode.
+ * Note: "agent logically hung" is NOT self-reported here (a hung agent can't
+ * honestly report it). The guardian infers that from relay-timeout streaks on
+ * the Pico side. This payload is objective, self-consistent facts only. */
 static void spi_status_task(void *arg)
 {
     (void)arg;
-    static const char status_json[] = "{\"wifi\":true,\"agent\":true}";
+    static uint32_t seq = 0;
+    char status_json[160];
     while (1) {
-        spi_wiz_send(s_spi_wiz, SPI_CMD_ESP_STATUS,
-                     (const uint8_t *)status_json,
-                     (uint16_t)(sizeof(status_json) - 1));
-        /* S-track soak instrumentation: free heap should stay flat over 24h;
-         * min_ever catches transient dips that preceded the OOM crashes in
-         * docs/DEVLOG.md (10th/11th entries). */
-        ESP_LOGI(TAG, "[health] free_heap=%" PRIu32 " min_ever=%" PRIu32,
-                 esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
+        uint32_t up   = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000u);
+        uint32_t heap = esp_get_free_heap_size();
+        bool     prox = claw_llm_http_get_proxy_mode();
+        int n = snprintf(status_json, sizeof(status_json),
+                 "{\"seq\":%" PRIu32 ",\"up\":%" PRIu32 ",\"heap\":%" PRIu32
+                 ",\"wifi\":%s,\"proxy\":%s}",
+                 seq, up, heap,
+                 s_wifi_connected ? "true" : "false",
+                 prox ? "true" : "false");
+        if (n > 0 && n < (int)sizeof(status_json)) {
+            spi_wiz_send(s_spi_wiz, SPI_CMD_ESP_STATUS,
+                         (const uint8_t *)status_json, (uint16_t)n);
+        }
+        ESP_LOGI(TAG, "[health] seq=%" PRIu32 " up=%" PRIu32 " free_heap=%" PRIu32
+                 " min_ever=%" PRIu32 " wifi=%d proxy=%d",
+                 seq, up, heap, esp_get_minimum_free_heap_size(),
+                 (int)s_wifi_connected, (int)prox);
+        seq++;
         vTaskDelay(pdMS_TO_TICKS(20000));
     }
 }
@@ -710,6 +740,7 @@ static void app_free_runtime_state(void)
 static void on_wifi_state_changed(bool connected, void *user_ctx)
 {
     (void)user_ctx;
+    s_wifi_connected = connected;
 
 #if CONFIG_SPI_CAM_BRIDGE_ENABLE
     if (connected) {

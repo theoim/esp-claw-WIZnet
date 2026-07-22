@@ -78,3 +78,11 @@ CONFIG_BT_CTRL_BLE_SCAN_DUPL=n
 
 # See https://github.com/espressif/esp-claw/issues/101
 CONFIG_HTTP_REUSE_ENABLE=n
+
+# Wired hybrid: use the lightweight memory flow. The structured (FULL) mode's
+# claw_memory_long_term_collect path hits a core heap-corruption double-free
+# (cJSON_Delete assert, claw_memory.c:769) under sustained proxy traffic and
+# panic-reboots the ESP. Lightweight collect reads markdown only (no cJSON, no
+# structured auto-extract) → crash path removed. Pin it in defaults so a clean
+# build / fresh checkout stays stable for the exhibition. (2026-07-22 DEVLOG)
+CONFIG_APP_CLAW_MEMORY_MODE_LIGHTWEIGHT=y

@@ -23,8 +23,12 @@ W5500 단독 연결이 원천적으로 못 하는 유일한 가치. 모든 설�
 보드 의존을 넣어달라고 하지 않는다**(리젝 사유). 자세한 분석·근거: `docs/DEVLOG.md` 20차.
 
 ### U-트랙 체크리스트 (업스트림 지향 — 이게 최종 목적에 직접 기여하는 유일한 트랙)
-- [ ] **U-1. 차별점 MVP 완성 = EN 리셋선.** HUNG/DEAD 감지는 됨(heartbeat), **물리 리셋
-      (Pico GPIO→ESP EN)이 마지막 다리.** 이거 돼야 "독립 감시자 + 구원자" 서사 완성 + 데모 가능.
+- [x] **U-1. 차별점 MVP = Guardian 리셋선. 완결(2026-07-22).** FW 양측 + HW 배선
+      (Pico GPIO5 → ESP GPIO4/D3, GND 공유) + 실기 검증까지 완료. CHIP_PU 납땜 회피 →
+      broken-out GPIO 소프트 리셋(ESP ISR→`esp_restart()`). HUNG(streak 3 판정/5 리셋)·
+      DEAD(STATUS 65s) 양 경로 실기 확인 + 쿨다운 + 안티부트루프 래치. "감시자+구원자"
+      서사 완성. 상세: DEVLOG 22·24차. (부수 확보: 프록시 fail-fast 픽스, Lightweight
+      메모리로 코어 힙크래시 회피 — DEVLOG 26~28차.)
 - [ ] **U-2. 벤치마크표**: guardian vs (dumb 워치독IC + W5500 직결). 항목: ESP 행업 시
       네트워크 생존 / 복구시간 / OOB 관리 / 메시지 유실. "왜 RP2040?"의 유일한 정당화 문서.
 - [ ] **U-3. E-1 벤더중립 추상화 PR**: `claw_llm_spi_proxy_fn_t` → 트랜스포트 중립 훅.

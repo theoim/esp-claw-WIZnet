@@ -10,6 +10,414 @@
 
 ---
 
+## 2026-07-22 (U-트랙 28차) — Lightweight 모드 힙 크래시 소멸 확인 (대성과) + 잔존 극단 케이스
+
+27차 회피책(Lightweight 메모리 모드) 빌드·플래시하고 안테나 탈거 연타 재현. **힙손상
+크래시 완전 소멸 확인 — 오늘 최대 성과.**
+
+**Lightweight 모드 검증 (성공)**
+- ESP 로그 전체(up 85~745s, LLM_REQ 1~10) **크래시 0회.** 이전엔 몇 요청 만에
+  `heap_caps_free assert`/`Guru Meditation`으로 패닉 리부트였으나 이제 10개+ 견딤.
+  `Rebooting` 없음.
+- 모드 반영 확인: `Long-term Memory context_len=73`(FULL 511 — markdown만 읽음,
+  cJSON 경로 없음), `cap Tools 11566`(FULL 12970 — memory 툴 제외), caps 9그룹
+  (FULL 10), auto-extract 로그 소멸. → crash 경로 자체가 빌드에서 빠짐.
+- 프록시 픽스도 재확인: `failing fast`, req 6~10 프록시 timeout이 25s 내 종료,
+  ESP 생존, STATUS 계속(seq 29→33).
+
+**잔존 이슈 (우선순위 낮음, 데모 영향 적음)**
+- Pico 로그 뒷부분: 안테나 완전 제거 + ~20개 연타의 극단 스트레스에서, 어느 순간부터
+  Pico가 프록시 응답을 못 만들고(openai 아웃바운드 실패 추정) → relay streak 누적 →
+  HUNG/DEAD → reset. 앞서(25/26차) 논의한 Pico 소켓/네트워크 계열 결함으로 추정.
+- 단 "인터넷 완전 부재 + 장시간 연타" 극단 케이스. 정상 WiFi/짧은 끊김에선 완벽
+  (동일 로그 앞 req 1~5 전부 성공). 데모 시나리오에서 회피 가능.
+
+**전시회 상태 요약**: 치명적·잦은 힙 크래시 = 해결(Lightweight). 프록시 블로킹/가짜
+DEAD = 해결(검증). 잔존 = 인터넷 완전부재 극단 케이스만. **데모 안정성 확보 수준 도달.**
+
+**다음**: (1) 지금 안정 버전을 양측 커밋 = 전시회 세이프포인트 확보(U-1 + 프록시픽스 +
+`__hang__` 게이팅 + Lightweight sdkconfig). (2) 이후 잔존 극단 케이스(Pico 프록시
+아웃바운드) 계속. (3) 데모 시나리오 리허설.
+
+---
+
+## 2026-07-22 (U-트랙 27차) — 프록시 픽스 검증 성공 + 진짜 크래시 = 코어 힙손상(claw_memory) → Lightweight 회피
+
+26차 프록시 픽스를 빌드·플래시하고 안테나 탈거 연타로 재현. **프록시 픽스는 성공
+확인**, 그리고 그동안 가려져 있던 **진짜 크래시 원인이 ESP 코어 힙손상**임이 백트레이스로
+확정됨.
+
+**26차 프록시 픽스 검증 (성공)**
+- 로그에 신규 문구 그대로: `SPI proxy failed (ESP_ERR_TIMEOUT) — failing fast (WiFi
+  down, no direct fallback)`. req=9/10/11이 프록시 timeout 시 직결·인라인 재시도 없이
+  즉시 실패 반환. 각 요청 ~25s 내 종료.
+- 그동안 STATUS seq 계속 증가(13→27), DEAD 안 걸림. **"90초 블로킹 → 가짜 DEAD →
+  리셋" 사슬 제거 확인.** 프록시 레이어 결함 해결.
+
+**진짜 크래시 = 코어 힙손상 (백트레이스 확정, 우리 스코프 밖)**
+```
+assert failed: heap_caps_free (heap != NULL && "free() target pointer is outside heap areas")
+cJSON_Delete → claw_memory_long_term_collect (claw_memory.c:769)
+      → claw_core_build_iteration_context → claw_core_agent_loop_task
+reset_reason=4 (panic)
+```
+- 25차에 기록한 그 힙손상 버그. `claw_memory_long_term_collect`가 매 요청 컨텍스트
+  빌드 때 `index_root`(cJSON)를 파싱→`cJSON_Delete`하는데, 그 지점에서 assert.
+  함수 자체는 정상(summaries는 detach 안 한 자식, index_root만 delete — double-free
+  없음) → **crash 지점 ≠ 버그 지점**. 힙이 이전에 딴 데서 손상됨(auto-extract가 쓴
+  index 파일 손상 의심). esp-claw 코어 결함, HEAP_POISONING 추적 필요 = 전시회
+  데드라인엔 부적합.
+- 크래시 후 동작은 설계대로: Guardian DEAD 감지 → 리셋 → 재부팅 → **20차 mid-relay
+  큐 실전 발동**("기기가 재시작됐어요. 복구되면 자동으로…" → 자동 재질의) → 정상 복귀.
+  불완전 코어 위 생존 = 프로젝트 가치 증명(전시회 데모 포인트).
+
+**전시회 안정화: Lightweight 메모리 모드로 크래시 경로 회피 (코드 수정 0)**
+- 발견: 이미 Kconfig 스위치 존재. `app_claw.c:376` — `CONFIG_APP_CLAW_MEMORY_MODE_FULL`
+  이면 crash 나는 `claw_memory_long_term_provider`, 아니면
+  `claw_memory_long_term_lightweight_provider` 등록.
+- `claw_memory_lightweight.c`의 lightweight collect는 **cJSON 전혀 안 씀** —
+  markdown 파일만 `read_file_dup`으로 통째 읽음. crash 경로(cJSON_Delete 힙손상)가
+  이 모드엔 아예 없음. + "without structured auto extraction" → index 쓰기/손상
+  경로도 차단.
+- **조치(사용자)**: `idf.py menuconfig` → App Claw Config → memory mode →
+  **Lightweight** → storage 파티션 erase(손상 index 제거, NVS 보존) → 빌드/플래시 →
+  안테나 뽑고 연타 재현으로 크래시 소멸 확인.
+
+**현재 상태 요약(전시회 관점)**: 프록시 블로킹/가짜 DEAD = 해결(검증됨). 코어 힙손상
+크래시 = 근본 미해결(코어 스코프)이나 Lightweight 모드로 발현 경로 회피 + Guardian
+자동복구가 안전망. 이 조합이면 데모 안정성 확보 가능.
+
+**다음**: Lightweight 재현 테스트 결과 확인 → 크래시 사라지면 U-1/프록시픽스/메모리모드
+전부 양측 커밋 → 전시회 데모 시나리오(정상 대화 + 의도적 WiFi 다운 → 유선 프록시 →
+크래시 시 자동복구) 리허설.
+
+---
+
+## 2026-07-21 (U-트랙 26차) — 결함 원인 규명: ESP 프록시 이중시도 → 90초 블로킹 → 반죽음
+
+25차의 "Pico RX 사망" 가설을 파려고 로그를 더 잡았더니 **가설이 틀렸음이 확인되고
+진짜 원인이 잡힘.** SPI race도, Pico 결함도 아니라 **ESP의 프록시 재시도 로직**.
+
+**가설 폐기 근거**: 재현 로그에서 SPI/STATUS가 초반엔 멀쩡(seq 정상 증가) → race로
+RX가 죽었다면 STATUS부터 끊겼어야 하는데 안 그럼. 대신 특정 요청(ESP req=9)부터
+무너지기 시작.
+
+**확정된 고장 사슬 (Pico 로그로 관측):**
+1. 프록시 200 응답까지 정상 → 근데 그 뒤 ESP가 LLM_RESP(0x43)를 Pico에 안 보냄
+   (`[relay] timeout after proxy activity`).
+2. 다음 요청부터는 HTTP_REQ(0x06)조차 시작 안 함 (`timeout — falling back` streak 1→4).
+3. 결국 STATUS(0x44)까지 멈춤 → 65s → `esp=DEAD` → Guardian 리셋. **ESP의 SPI 송신
+   전체가 죽음(LLM_RESP+HTTP_REQ+STATUS 전부). ESP 반죽음.**
+   - 이번 DEAD 판정·리셋은 **오판이 아니라 정당** — ESP가 실제로 송신 불능이었음.
+     Guardian이 제 역할 함.
+
+**근본 원인 (코드 확정):**
+- `components/.../llm/claw_llm_http_transport.c`: WiFi 다운 상태(`g_use_spi_proxy`)에서
+  LLM 요청 1건 처리가 최악의 경우:
+  1. 1차 SPI 프록시 시도 → Pico 응답 세마포어 **45s** 대기(`spi_http_proxy_fn`
+     `main.c:177`, `xSemaphoreTake(..., 45000)`) → timeout.
+  2. `g_use_spi_proxy=false` → **직결 HTTP 시도**(WiFi 없으니 무의미, 즉시 실패,
+     transport.c:379~463).
+  3. **인라인 프록시 재시도**(transport.c:469~484) → `g_use_spi_proxy=true` → 같은
+     요청 **또 45s** 대기 → 또 timeout.
+  → **한 요청에 최대 ~90s 블로킹** + 그동안 SPI 송신 경로 반복 점유 → STATUS/LLM_RESP가
+    밀림 → Pico STATUS 65s 끊김 → DEAD.
+- (STATUS가 정확히 어느 뮤텍스에서 막히는지는 `spi_wiz` 컴포넌트 내부까지 봐야 100%
+  확정 — 단 픽스 방향은 무관하게 확실: 90s 블로킹 자체를 제거.)
+
+**픽스 설계 (다음 세션 구현):**
+1. **핵심**: 이미 프록시 모드인데 1차 프록시가 `ESP_ERR_TIMEOUT`이면 직결 시도 +
+   인라인 재시도를 **둘 다 건너뛰고 즉시 실패 반환**. WiFi 없는 게 확실한데 같은
+   요청을 45s 더 반복해봤자 동일 timeout. `transport.c`의 inline-retry 진입 조건에
+   "직전 프록시가 timeout이 아니었을 때만" 가드 추가.
+2. `spi_http_proxy_fn` 응답 대기 45s → 25s (Pico 왕복 실측 ~15s + 여유). 단일 실패의
+   최대 블로킹을 절반으로.
+3. (검토) STATUS 송신을 프록시 블로킹과 독립 보장 — 별도 우선순위 or 프록시 대기가
+   SPI 송신 뮤텍스를 잡지 않도록.
+
+**오늘 세션 종료 판단**: U-1 완결 + CRC 픽스 + 훅 게이팅 + 본 결함 원인규명까지 큰
+진전. 본 픽스는 다중 파일·신중 수정 + 빌드/재테스트 필요 → 다음 세션에 코드 작성 →
+사용자 빌드. 오늘은 양쪽 전원 재인가로 정상 복귀만.
+
+**다음 세션 최우선**: 위 픽스 1·2 구현(ESP `claw_llm_http_transport.c` +
+`main.c` spi_http_proxy_fn) → 안테나 뽑고 연타 재현으로 "90s 블로킹/DEAD" 소멸 확인.
+그 후 24차까지의 U-1 성과 커밋 → U-2.
+
+---
+
+## 2026-07-21 (U-트랙 25차) — 훅 게이팅 빌드검증 + 카오스 테스트로 결함 3건 발견
+
+24차 마무리로 `__hang__` 훅 Kconfig 게이팅(기본 n) 빌드·플래시 검증. 이후 안테나
+탈착 반복하며 여러 실패 시나리오를 우연히 밟아 신규 결함 3건 확보. 우리 레이어 기능
+(mid-relay 리부트 큐, 유선 인라인 폴백)이 실전에서 맞물려 자가복구하는 장면도 처음
+포착.
+
+**훅 게이팅 검증 (통과)**
+- `idf.py build` 정상, `__hang__` 코드 통째 컴파일 제외 확인(Kconfig 기본 n).
+- 플래시 후 `[guardian] reset-request line ready on GPIO4` 정상 — 훅만 빠지고 나머지
+  guardian 인프라 온전. TG로 "hang" 보내니 LLM이 정상 답변(훅 비활성 확인).
+
+**신규 결함 ①(1순위, 우리 스코프): Pico 완전 락업 + Guardian 사각지대**
+- 안테나 뽑은 상태 연속 요청 중 Pico가 프록시 아웃바운드 TLS handshake
+  (`api.openai.com:443`)에서 멈춤 → **Pico `[health]` 1초 타이머 출력까지 정지 =
+  코어 완전 하드행**(네트워크 느림이 아니라 락업). ESP는 정상(heap/seq 계속 증가).
+- 유발 정황: ESP가 첫 프록시 타임아웃 후 `retrying via SPI proxy inline`으로 동일
+  요청 2차 발사 → Pico가 1차 처리 중 TLS 슬롯(sn=0/1/2) 겹침. 6/22~23(3·10·11차)
+  "동시 TLS handshake hang" 계열 재발로 추정.
+- **구조 문제 2개 노출**:
+  (a) Pico 릴레이 90s 데드라인은 while 루프 반복 사이에만 체크 → 루프 안
+      `wiz_claw_http_post_cb()` 블로킹 콜이 TLS에서 멈추면 데드라인 영영 미도달
+      (사실상 무제한 대기).
+  (b) **리셋선은 Pico→ESP 단방향.** Pico 자체가 죽으면 되살릴 주체가 없음. Guardian은
+      ESP 사망만 감지·복구하고 Pico 사망은 감지 자체가 없음(heartbeat 비대칭).
+- 복구: Pico 전원 재인가 필요(SW 복구 불가).
+
+**신규 결함 ②(1순위, 우리 스코프): PING/PONG 단발성 → Pico 단독 리부트 시 링크 좀비화**
+- ESP는 **자기 부팅 시 1회만** PING 재시도 루프. Pico가 PONG 주면 종료, 이후 재확인
+  없음. → Pico만 리부트하면 ESP는 "핸드셰이크 완료" 상태 유지한 채 죽은 링크에 계속
+  송신. 양쪽 다 리셋해야만 재동기.
+- 픽스 방향(다음): ESP 주기적 재핑 **또는** Pico가 (재)부팅 시 능동 "reboot 알림"
+  패킷 송신 + ESP 상시 리스닝. 결함 ①(b)의 반대 방향 heartbeat와 함께 "양방향
+  liveness"로 묶어 설계.
+
+**신규 결함 ③(코어 스코프, 완화 대상): WiFi 다운 순간 ESP 크래시**
+- 안테나 있이 부팅→응답 성공→**HTTP 요청 진행 중 안테나 탈거** 순간 ESP
+  `Guru Meditation Error: Core 1 panic (IllegalInstruction)`, `memcpy in ROM`
+  백트레이스. 진행 중 TLS/HTTP 처리 메모리 손상 — esp-tls/esp_http_client 계열,
+  **esp-claw 코어 스코프(우리가 안 고침, Guardian이 완화)**.
+- **자가복구 확인(수확)**: ESP 자체 panic 핸들러로 재부팅(reset_reason=4, Guardian
+  무관) → 재부팅 중 **20차 mid-relay 리부트 큐가 실전 첫 발동**: TG에
+  `기기가 재시작됐어요. 복구되면 자동으로 다시 답해드릴게요.` → 재부팅 후 WiFi 자동
+  재접속 → 직결 실패 시 유선 인라인 프록시 자동 전환까지 연쇄 정상 동작. 예정 없던
+  카오스 테스트에서 기존 회복 기능들이 물려 돌아가는 걸 실증.
+
+**부수 관찰**: `apply cached context failed ... Session History err=ESP_FAIL`
+(첫 메시지/세션 인덱스 파일 부재 `errno=2` 계열)로 요청 1건 실패, ok=0 우아한 처리.
+치명적 아님, 코어 세션 저장 계열.
+
+**다음**: 결함 ①·② = 양방향 heartbeat/liveness로 묶어 설계·구현(우리 스코프,
+U-트랙 핵심 — "Pico도 죽을 수 있다"는 fault-domain 대칭성 보강). ③은 코어라 기록만.
+그 전에 24차까지의 U-1 성과 커밋 여부 결정.
+
+---
+
+## 2026-07-21 (U-트랙 24차) — U-1 완결: HUNG→RESET→RECOVERY 풀사이클 실기 검증 + OpenAI 전환
+
+23차 CRC 픽스 이후 같은 날 이어서: LLM 프로바이더를 groq→OpenAI(`gpt-4o-mini`, 회사
+발급 `sk-proj-` 키)로 전환하고, 23차에서 미완이었던 `__hang__` 실 임계값 HUNG 시뮬을
+드디어 정확히 재현해 **U-1(Guardian 리셋선)을 하드웨어+로직 전체 완결**.
+
+**LLM 프로바이더 전환 (groq → OpenAI)**
+- groq 계정의 `meta-llama/llama-4-scout-17b-16e-instruct`가 라인업에서 완전히
+  빠짐(단종) — 키 만료가 아니라 모델 자체가 없어진 것. groq 대시보드 모델 목록으로 확인.
+  키 재발급 불필요.
+- 회사 발급 OpenAI 프로젝트 키(`sk-proj-...`)로 전환: base_url
+  `https://api.groq.com/openai/v1` → `https://api.openai.com/v1`, model → `gpt-4o-mini`.
+  esp-claw 프로비저닝 UI의 "OpenAI" 프리셋 사용.
+- 전환 후 안테나 뽑은 상태로 9연속 요청 테스트 — 8/9 정상 응답, `[health]` 끊김 없음.
+  덤으로 WiFi 끊기는 순간을 라이브로 포착: req=2에서 직결 HTTP가
+  `Connection reset by peer`로 실패 → `HTTP failed, retrying via SPI proxy inline` →
+  유선 경유 자동 성공. WiFi가 아직 "죽었다"고 안 알려진 찰나에 코드가 알아서 유선으로
+  전환하는 장면 — U-4 데모 소재 확보(20차의 groq 버전과 같은 패턴, 프로바이더 무관하게
+  재현됨 → 유선 페일오버가 프로바이더 특정 우연이 아니라 설계대로 동작한다는 방증).
+
+**CRC 재동기 픽스 회귀 검증**
+- 9연속 + 이후 다회 요청(최대 29KB body)에서 CRC 에러 자체는 재현 안 됐지만(확률
+  낮은 이벤트), 23차 변경 이후 회귀 없이 전부 정상 — 안정성 유지 확인.
+
+**`__hang__` 트리거 실전 삽질 → 해결**
+- 텔레그램 클라이언트가 `__hang__`을 입력 즉시 이탤릭 마크다운으로 **변환하며 밑줄을
+  삭제**해 버림 → 봇은 그냥 `hang`을 받아 LLM이 진짜로 답변(2회 반복 실수).
+- **해결**: 백틱으로 감싸서 입력(`` `__hang__` ``) — 코드스팬 안에서는 중첩 마크다운
+  파싱이 안 돼 밑줄이 리터럴로 보존됨. 이후 정상 트리거.
+
+**U-1 풀사이클 검증 (실 임계값)**
+```
+streak=1,2 → (판정 없음)
+streak=3   → [guardian] ESP32 agent HUNG (STATUS alive)   ← RELAY_HUNG_STREAK=3
+streak=4   → HUNG 반복
+streak=5   → HUNG + [guardian] reset triggered (reason=HUNG)
+           → reset pulse #1 sent to ESP32 (GPIO5 high 100ms)  ← GUARD_RESET_STREAK=5
+ESP:  [guardian] reset request from W55RP20 confirmed → esp_restart()
+      reset_reason=3 (RTC_SW_CPU_RST) → 재부팅 → WiFi 재접속(1s, 저장 크리덴셜)
+      → 전 서비스 재초기화 → LLM 백엔드 복원 → SPI PING/PONG 재개
+```
+20차 이후 처음으로 **오탐 없이 설계된 정확한 임계값에서만** HUNG 판정과 리셋이 발동하는
+것을 확인. 하드페일 래치(3회 누적) 미도달, 정상 1회 리셋 후 완전 복구.
+
+**U-1(Guardian 리셋선) = 완결.** 배선, FW 양측, HUNG/DEAD 양 경로 실기 검증, 정확한
+임계값 재현까지 전부 끝남.
+
+**`__hang__` 훅 처리 확정**: 삭제도 방치도 아니고 Kconfig로 게이팅. `main/main.c`의
+`if (strstr(text, "__hang__"))` 블록을 `#ifdef CONFIG_CLAW_GUARDIAN_HANG_TEST_HOOK`로
+감싸고, `main/Kconfig.projbuild`에 `App Config → Wired Guardian Test Hooks → Enable
+Guardian HUNG regression test hook` 옵션 신설(기본 n). 이유: 무조건 트리거되는 문자열을
+프로덕션 빌드에 남기면 누구든 텔레그램으로 `__hang__` 보내 에이전트를 90s 먹통 + 결국
+ESP 강제리셋시킬 수 있음(공개 예정 프로젝트라 더 중요) — 그렇다고 삭제하면 U-1 로직을
+다시 건드릴 때마다 회귀 재현 수단이 없어짐. 기본 빌드엔 안 들어가고, 필요할 때
+`idf.py menuconfig`로 켜서 재현 가능.
+
+**다음**: 양측(ESP `hybrid/w55rp20`, Pico `main`) 미커밋 변경사항 커밋 → U-2 벤치마크
+표(vs dumb 워치독) 착수.
+
+---
+
+## 2026-07-21 (U-트랙 23차) — SPI RX 영구 사망 결함 픽스: 타임아웃 재동기
+
+22차에서 발견한 결함(CRC 에러 1회 → RX 영구 사망) 근본 원인 규명 + 픽스. Pico
+`wiz_claw_spi_host/wiz_spi_slave.c`만 수정, ESP 무변경.
+
+**근본 원인**: `_handle_rx()`가 헤더의 `len` 필드를 **CRC 검증 전에** 신뢰해서
+`_rx_bytes(payload, plen)`으로 그만큼 무기한 블로킹 리드함. `len` 필드 자체가 전송
+중 비트 손상되면(`SPI_CLAW_MAX_CHUNK`=2048 이하 범위 내라 크기 가드도 못 잡음) Pico는
+실제 ESP가 보낸 바이트 수보다 많이 읽으려 시도. ESP는 이미 그 프레임 전송을 끝내고
+클럭을 멈췄으므로 Pico는 무기한 대기 — 그러다 **ESP가 다음에 보내는 진짜 프레임의
+선두 바이트를 이전 프레임 payload의 나머지로 먹어버림**. 그 뒤로 모든 프레임이
+영구적으로 오프셋이 밀려 CRC가 항상 불일치하고, 우연히 0xCA 0xFE로 재정렬될 확률이
+사실상 0에 가까워 복구 불가. "CRC 에러 1회 → RX 영구 사망, TX(LLM_REQ 송신)는 정상"
+관측과 정확히 일치(TX는 `wiz_spi_slave_send()`로 별도 경로, poll() 상태와 무관).
+
+**픽스**: `_rx_bytes()`(무기한 블로킹)를 `_rx_bytes_timeout()`(100ms 데드라인,
+`to_ms_since_boot(get_absolute_time())` 기준)로 교체. 실패 시 CRC 체크를 건너뛰고
+즉시 리턴해 poll()의 매직바이트 스캔이 다음 진짜 프레임에서 재동기할 기회를 보존.
+3곳 적용:
+1. `_handle_rx()` 헤더 잔여 5바이트 읽기
+2. `_handle_rx()` payload 읽기 (가장 중요 — 사고의 직접 원인)
+3. `wiz_spi_slave_poll()`의 2번째 매직바이트 대기(우연한 0xCA 매칭 뒤 더 이상
+   바이트가 안 오는 경우도 같은 취약점이라 함께 적용)
+
+기존 `_rx_bytes()`는 이제 미사용이라 삭제(20차 "unused-static 경고 무시 금지" 교훈
+반영 — 경고를 남겨두지 않음).
+
+**한계**: 타임아웃은 "다음 프레임을 훔쳐 먹는 것"을 막을 뿐, 애초에 CRC 검증 전에
+`len`을 신뢰하는 프로토콜 설계 자체는 여전함. 완전한 해법은 헤더 전용 체크섬을
+따로 둬서 payload 길이를 읽기 전에 헤더 무결성부터 검증하는 것(ESP측 프로토콜
+변경 필요) — 지금은 스코프상 보류, 필요 시 별도 트랙.
+
+**다음**: 빌드→플래시→대용량 연속 프록시로 CRC 유발 재현 테스트(재동기 확인)→
+통과 시 `__hang__`(정확한 문자열) 5연발 HUNG 시뮬 재개.
+
+---
+
+## 2026-07-16 (U-트랙 22차) — U-1 리셋선 E2E 실기 검증 성공 (HUNG·DEAD 양 경로) + 신규 결함: CRC 후 SPI RX 사망
+
+21차 FW를 빌드·배선하고 하루 종일 실기 테스트. **리셋선이 두 경로(HUNG/DEAD) 모두에서
+실제로 ESP를 되살리는 것 확인** — U-1 하드웨어 검증 완료. 부산물로 오탐 사고 1건(수정
+완료)과 신규 결함 1건(SPI RX 사망) 확보.
+
+### 사고 1: DEBUG 값 미복원 → 멀쩡한 ESP 리셋 루프 (수정 완료)
+
+U-1 빠른 테스트용으로 낮춰둔 값 3개("REVERT before commit" 주석까지 달아놓고)를
+복원하지 않은 채 실 메시지 테스트 진행:
+- `LLM_RELAY_TIMEOUT_MS` 90000→8000: 프록시 왕복 실측 ~10.5s > 8s → **모든 릴레이가
+  구조적으로 타임아웃**. LLM_RESP는 매번 뒤늦게 도착해 버려짐.
+- `RELAY_HUNG_STREAK` 3→2, `GUARD_RESET_STREAK` 5→2: 메시지 2개 만에 HUNG 판정+리셋.
+- 결과: 유저는 답을 영원히 못 받고, guardian은 일하는 중인 ESP를 리셋. 단, 이 오탐
+  리셋이 **펄스→ISR→`esp_restart()`→`reset_reason=3`(RTC_SW_CPU_RST) 체인의 첫 실기
+  검증**이 됨(전화위복).
+
+**픽스 (Pico `main.c`)**: 3값 복원 + **proxied-liveness 가드** 신설 — relay 대기 중
+ESP가 프록시 HTTP를 실제로 서빙했으면(= 에이전트가 이 요청을 처리 중이라는 직접 증거)
+타임아웃이 나도 HUNG streak에 카운트하지 않음(`timeout after proxy activity — agent
+busy, not hung`). "느림"과 "행업"의 구조적 분리.
+
+### 검증 A: 정상 릴레이 (픽스 후)
+
+TG 3연속 → relay_ok=3, streak=0, 회당 ~10s. 픽스 유효.
+
+보너스 장면: ESP가 wifi=1인데 groq 직결 실패(`ESP_ERR_HTTP_CONNECT`) →
+`llm_http`가 **inline SPI 프록시로 재시도 → 성공**. "WiFi는 붙었지만 인터넷 실질
+불능" 케이스를 유선이 구제 — U-4 데모 소재 1급.
+
+### 검증 B: "hang" 테스트 (의도와 다르게 흘렀지만 수확 큼)
+
+`__hang__` 훅을 쓰려던 게 키워드를 `hang`으로 보내서 **HUNG 시뮬은 미실행**
+(1~2번째는 LLM이 진짜로 답함). 대신:
+
+1. **proxied-liveness 가드 실전 발동 확인**: 3번째 메시지에서 프록시 200 서빙 후
+   LLM_RESP가 유실(아래 결함)됐는데, 가드가 정확히 "busy, not hung"으로 streak 0 유지.
+2. **신규 결함 — CRC 에러 1회 → Pico SPI RX 영구 사망**:
+   `[spi_slave] CRC error: got 0x00, expected 0x3E` 이후 Pico가 **모든 수신 프레임
+   상실**(STATUS 0x44, HTTP_REQ 0x06, LLM_RESP 0x43 전부). TX 방향(LLM_REQ 송신)은
+   정상 — ESP는 req=4,5를 받아 처리 시도(프록시 요청이 Pico에 안 닿아 45s×2 타임아웃
+   후 실패). 3~4차(6/22-23)의 "CRC 후 0xF0 디싱크"와 같은 계열 — 당시 완화(청크 축소,
+   딜레이, printf 억제)로 빈도만 줄였지 **CRC 후 재동기 로직 부재**가 근본 원인.
+   슬레이브 상태머신이 헤더 탐색으로 복귀 못 하는 것으로 추정. **결함 큐 1순위 등록.**
+3. **DEAD 경로 E2E 검증 성공**: RX 사망으로 STATUS 65s 침묵 → `esp=DEAD` → 리셋
+   펄스 #1 → ESP `reset request from W55RP20 confirmed → esp_restart()` →
+   `rst:0xc (RTC_SW_CPU_RST)`. **SPI가 완전히 죽은 상태에서 GPIO 리셋선만으로 복구
+   개시** — out-of-band 리셋의 존재 이유를 실증. 차별점 서사(대역외 소생 라인)의
+   핵심 증거 확보. (이번 DEAD는 실제로는 Pico 쪽 링크 결함이었지만, "링크가 죽으면
+   일단 상대를 리셋해 재동기 기회를 만든다"는 동작 자체는 설계 의도대로.)
+
+### 오늘 확정된 것
+
+- U-1 리셋선: 배선(GPIO5→GPIO4, GND 공유) + FW 양측 + HUNG(오탐이지만 체인 검증)·
+  DEAD 양 경로 실기 동작 = **하드웨어 파트 완료**.
+- 남은 U-1 마무리: `__hang__` 정확 키워드로 실 임계값(streak 3 판정/5 리셋) HUNG 시뮬
+  + 하드페일 래치(3회) 검증 — RX 사망 결함과 무관하게 가능(LLM_REQ 방향은 살아있으므로,
+  단 깨끗한 부팅 상태에서).
+
+### 결함 큐 갱신 (우선순위)
+
+1. **(신규·1순위) CRC 후 SPI RX 영구 사망** — Pico `wiz_spi_slave.c` CRC 에러 처리에
+   재동기 없음. 방향: CRC 실패 시 프레임 상태 리셋 + 슬라이딩 윈도우 헤더 재탐색 +
+   (선택) ESP에 NAK/재전송. 단일 비트 에러가 세션 전체를 죽이는 현 상태는 유선
+   신뢰성 서사에 정면 배치 — U-트랙 진입 전 필수.
+2. 로컬 폴백 키 미설정(기존 1번) — 이번에도 매 타임아웃마다 `local fallback
+   unavailable` 노출.
+3. /fatfs 누적(used 159744→188416 계속 증가), 힙손상·툴400 등 코어 이슈는 기존 입장
+   유지(Guardian 완화 대상).
+
+### 다음 세션
+
+1. CRC 재동기 픽스(Pico `wiz_spi_slave.c`) → CRC 유발 테스트(대용량 연속 프록시).
+2. `__hang__` 5연발 실 임계값 HUNG 시뮬 + 하드페일 래치.
+3. 통과 시 U-1 완료 커밋(양측) → U-2 벤치마크 표 착수. 오늘 로그 2벌은 U-2/U-4 재료로 보관.
+
+---
+
+## 2026-07-16 (U-트랙 21차) — U-1 Guardian 리셋선 (FW 구현, HW+테스트 대기)
+
+**U-트랙 첫 전진.** 차별점 MVP의 마지막 다리 = Guardian이 hung ESP를 물리적으로
+되살리는 리셋선. 20차까지 감지만 하고(HUNG/DEAD) 되살리진 못했음 → 이번에 구현.
+
+**설계 결정: CHIP_PU(HW EN) 대신 broken-out GPIO 소프트 리셋.**
+사용자가 XIAO ESP32-S3 CHIP_PU 패드 납땜이 어렵다고 함. 트레이드오프 검토 후 GPIO
+소프트 리셋 채택:
+- HUNG 정의 = "STATUS는 계속 오는데(RTOS 살아있음) 에이전트만 응답 안 함." RTOS
+  살아있으면 ESP GPIO ISR 발동 가능 → `esp_restart()` 호출됨. **차별점 케이스
+  (워치독 IC가 못 보는 논리적 행업)를 완벽 커버.**
+- 못 잡는 것: RTOS까지 완전 사망 + ISR 죽은 희귀 케이스(보통 패닉→자동재부팅). 이건
+  물리 EN 라인 필요 → 향후 HW 옵션으로 문서화.
+- **차별점의 지능은 리셋 핀 종류가 아니라 "논리적 행업 감지"에 있음** → SW 리셋으로 서사 유지.
+
+**배선**: Pico GPIO5(출력, idle LOW) → ESP32-S3 GPIO4/D3(입력, 풀다운, posedge ISR),
+GND 공유. 리셋 명령 = GPIO5 HIGH 100ms → ESP ISR → 50ms 재확인 → `esp_restart()`.
+(HIGH 지속 확인으로 노이즈 오리셋 방지.) 핀 선정: GPIO4는 스트래핑 아님, SPI(1/2/7/8/9)·
+PIR(44)와 안 겹침.
+
+**ESP측** (`edge_agent/main.c`): `ESP_RESET_REQ_GPIO 4` + `reset_req_isr_handler`
++ `reset_req_task`(notify 대기→50ms 샘플→`esp_restart()`). SPI 브릿지 블록 안에 배치
+(기존 PIR ISR 서비스 재사용).
+
+**Pico측** (`wiz_claw_spi_host/main.c`):
+- `esp_reset_pulse()`: GPIO5 HIGH 100ms.
+- `guardian_try_reset(reason)`: 쿨다운 30s(부팅+접속 예산) + 최대 3회 하드페일 래치
+  (`g_esp_hard_failed`) — 부트루프 방지. 초과 시 리셋 중단 + 로그.
+- `guardian_note_recovery()`: relay 성공(에이전트 응답=생존 증명) 시 카운터 클리어.
+  STATUS만으로는 클리어 안 함(HUNG일 때도 STATUS는 옴 → 오탐 방지).
+- 트리거 2경로: HUNG(relay_to_streak ≥ 5, 감지 임계 3보다 높게 → 회복 기회) +
+  DEAD(STATUS 65s 끊김, `check_esp32_alive_timeout`).
+- 회복 확인은 기존 `g_esp_boot_epoch`(ESP 부팅 PING) + 메시지큐 자동 재질의와 맞물림
+  → "죽었다 살아나며 답 전달" 데모 완성.
+
+**상태**: FW 양측 완료·미빌드. **다음 = 사용자 빌드/플래시 → HW 배선(GPIO5↔GPIO4,GND)
+→ HUNG 시뮬 테스트**(에이전트만 멈추고 STATUS 살림 → Pico 리셋 펄스 → ESP 재부팅 →
+메시지큐가 답 전달 확인). 안티루프(3회 후 하드페일) 검증도.
+
+---
+
 ## 2026-07-15 (P-트랙 20차) — heartbeat·Guardian 큐·보안·다수 견고성 (하루 요약)
 
 하드웨어 반복 테스트로 여러 결함 잡고 Guardian 차별점 첫 조각들 구현. 커밋 분산

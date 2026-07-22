@@ -317,6 +317,14 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
     char *sanitized_body = NULL;
     int status_code = 0;
     esp_err_t err;
+    /* True once the SPI proxy has been tried for this request. Gates the
+     * inline retry below: retrying the proxy after we already tried it just
+     * burns a second ~25 s wait (2026-07-21 incident: proxy timeout → useless
+     * direct-HTTP attempt → second proxy attempt → ~90 s total blocking →
+     * ESP starves STATUS/LLM_RESP → Pico flags DEAD → reset). The inline
+     * retry is only meaningful when the proxy was NOT tried first — i.e. we
+     * were sending direct over WiFi and it dropped mid-request. */
+    bool proxy_attempted = false;
 
     if (out_response) {
         memset(out_response, 0, sizeof(*out_response));
@@ -341,6 +349,7 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
      * direct HTTP path and clear the proxy flag.
      */
     if (g_use_spi_proxy && s_spi_proxy_fn) {
+        proxy_attempted = true;
         char *proxy_auth = build_auth_header_value(request->auth_type, request->api_key);
         char *proxy_body = NULL;
         int   proxy_status = 0;
@@ -363,17 +372,25 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
             free(sanitized_body);
             return err;
         }
-        /* proxy transport error → fall back to direct WiFi.
-         * ESP_ERR_INVALID_STATE means proxy was busy (concurrent call):
-         * keep g_use_spi_proxy so the next request retries via proxy. */
         free(proxy_body);
-        if (perr != ESP_ERR_INVALID_STATE) {
-            g_use_spi_proxy = false;
-            ESP_LOGW(TAG, "SPI proxy failed (%s), falling back to direct HTTP",
-                     esp_err_to_name(perr));
+        /* Proxy transport failure while IN proxy mode. WiFi is down (that's why
+         * proxy mode is on), so the direct-HTTP fallback below would just burn
+         * its connect timeout and fail, and then the inline retry would call
+         * the proxy a SECOND time — another ~25 s wait for the same doomed
+         * request. Both are pointless here: fail fast so this LLM worker frees
+         * up and the STATUS heartbeat keeps flowing (no false DEAD → no reset).
+         * Keep g_use_spi_proxy on: WiFi is still down, proxy is still the path
+         * for the next request. */
+        if (perr == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "SPI proxy busy (concurrent call) — failing this request fast");
+            *out_error_message = dup_printf("SPI proxy busy (concurrent request)");
         } else {
-            ESP_LOGW(TAG, "SPI proxy busy, using direct HTTP for this request");
+            ESP_LOGW(TAG, "SPI proxy failed (%s) — failing fast (WiFi down, no direct fallback)",
+                     esp_err_to_name(perr));
+            *out_error_message = dup_printf("SPI proxy failed: %s", esp_err_to_name(perr));
         }
+        free(sanitized_body);
+        return ESP_FAIL;
     }
 
     /* Acquire the WiFi-TLS slot before opening any TLS connection.
@@ -465,8 +482,15 @@ esp_err_t claw_llm_http_post_json(const claw_llm_http_json_request_t *request,
         /* Inline SPI proxy retry: tear down the broken WiFi client and
          * immediately forward the same request to Pico over SPI.
          * This lets Pico's relay (still waiting for LLM_RESP) get a valid
-         * response without the 35-second timeout. */
-        if (s_spi_proxy_fn) {
+         * response without the 35-second timeout.
+         *
+         * ONLY when the proxy was not already tried for this request. If we
+         * entered in proxy mode and the proxy already failed, we returned
+         * above — reaching here with proxy_attempted set would mean a second
+         * doomed ~25 s proxy wait. The legitimate case is: we were sending
+         * DIRECT over WiFi and it dropped mid-request, so the proxy hasn't
+         * been tried yet and is the right recovery. */
+        if (s_spi_proxy_fn && !proxy_attempted) {
             g_use_spi_proxy = true;
             ESP_LOGW(TAG, "HTTP failed, retrying via SPI proxy inline");
 

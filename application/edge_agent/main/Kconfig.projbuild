@@ -123,4 +123,23 @@ menu "Default Search Settings"
 
 endmenu
 
+menu "Wired Guardian Test Hooks"
+
+    config CLAW_GUARDIAN_HANG_TEST_HOOK
+        bool "Enable Guardian HUNG regression test hook"
+        default n
+        help
+            When enabled, an incoming LLM_REQ whose text contains "__hang__"
+            is silently swallowed (never submitted, never answered) instead
+            of processed normally, while the SPI status heartbeat keeps
+            flowing. This simulates a logically-hung agent (RTOS alive, agent
+            stuck) so the W55RP20 Guardian's HUNG detection and reset-line
+            recovery can be regression-tested on demand.
+
+            Leave disabled in any build reachable from a real Telegram bot —
+            an unconditional trigger string would let anyone hang the agent
+            (and eventually force an ESP reset) just by sending that phrase.
+
+endmenu
+
 endmenu

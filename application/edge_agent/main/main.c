@@ -63,6 +63,17 @@
 #define PIR_GPIO_PIN      44
 #define PIR_DEBOUNCE_MS   30000
 
+/* ── Guardian reset line (U-1) ────────────────────────────────────────
+ * The W55RP20 guardian drives ESP_RESET_REQ_GPIO high to ask a hung agent
+ * to reboot itself. Wire: Pico GPIO5 → ESP32-S3 GPIO4 (D3), shared GND.
+ * Software reset via a broken-out GPIO — recovers the "agent logically hung
+ * while the RTOS is still alive" case a dumb watchdog IC cannot see (the SPI
+ * status heartbeat keeps toggling, so an external watchdog never trips). A
+ * full lockup with interrupts dead is NOT covered — that needs a physical
+ * EN/CHIP_PU line (future hardware option). */
+#define ESP_RESET_REQ_GPIO       4
+#define ESP_RESET_REQ_CONFIRM_MS 50   /* line must stay high this long to act (noise guard) */
+
 static const char *TAG = "app";
 
 static app_config_t *s_config;
@@ -160,10 +171,14 @@ static esp_err_t spi_http_proxy_fn(const char *url, const char *auth_header,
     result = spi_wiz_send(s_spi_wiz, SPI_CMD_HTTP_BODY_END, NULL, 0);
     if (result != ESP_OK) { goto unlock; }
 
-    /* wait for Pico to complete HTTP POST and return response (45s).
-     * Pico TLS handshake + HTTP round-trip for large payloads (20KB+) can
-     * exceed 20s; previous timeout caused spurious proxy-fail + LLM_RESP error. */
-    if (xSemaphoreTake(s_http_proxy_sem, pdMS_TO_TICKS(45000)) != pdTRUE) {
+    /* wait for Pico to complete HTTP POST and return response (25s).
+     * Pico TLS handshake + HTTP round-trip for large payloads (20KB+) runs
+     * ~15s observed; 25s covers it with margin. Kept well under the Pico's
+     * 65s STATUS-timeout DEAD threshold so a single slow round trip can't
+     * starve the heartbeat long enough to trigger a reset. (Was 45s, which —
+     * combined with a now-removed double proxy attempt — could block one
+     * request ~90s and starve STATUS. See 2026-07-21 DEVLOG.) */
+    if (xSemaphoreTake(s_http_proxy_sem, pdMS_TO_TICKS(25000)) != pdTRUE) {
         ESP_LOGE("spi_proxy", "response timeout");
         result = ESP_ERR_TIMEOUT;
         goto unlock;
@@ -205,6 +220,34 @@ static void pir_send_task(void *arg)
         ESP_LOGI(TAG, "PIR motion detected → SPI_CMD_EVENT");
         spi_wiz_send(s_spi_wiz, SPI_CMD_EVENT,
                      (const uint8_t *)pev, sizeof(pev) - 1);
+    }
+}
+
+static TaskHandle_t s_reset_req_task_handle = NULL;
+
+static void IRAM_ATTR reset_req_isr_handler(void *arg)
+{
+    (void)arg;
+    BaseType_t woken = pdFALSE;
+    vTaskNotifyGiveFromISR(s_reset_req_task_handle, &woken);
+    portYIELD_FROM_ISR(woken);
+}
+
+/* Guardian requested a reboot (ESP_RESET_REQ_GPIO went high). Confirm the line
+ * stays high past the noise-guard window, then esp_restart(). Runs as a task so
+ * we can sample + delay off the ISR. */
+static void reset_req_task(void *arg)
+{
+    (void)arg;
+    while (1) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        vTaskDelay(pdMS_TO_TICKS(ESP_RESET_REQ_CONFIRM_MS));
+        if (gpio_get_level(ESP_RESET_REQ_GPIO) == 1) {
+            ESP_LOGW(TAG, "[guardian] reset request from W55RP20 confirmed → esp_restart()");
+            fflush(stdout);
+            esp_restart();
+        }
+        ESP_LOGW(TAG, "[guardian] reset request pulse too short — ignored (noise)");
     }
 }
 
@@ -544,6 +587,23 @@ static void on_spi_rx(spi_claw_cmd_t cmd, uint8_t seq, const uint8_t *payload,
         const char *text       = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
 
         if (!text || !session_id) { cJSON_Delete(root); break; }
+
+#ifdef CONFIG_CLAW_GUARDIAN_HANG_TEST_HOOK
+        /* U-1 guardian-reset regression test only — disabled by default
+         * (`idf.py menuconfig` → App Config → Wired Guardian Test Hooks →
+         * enable "Guardian HUNG regression test hook"). Simulate a
+         * logically-hung agent: swallow the request
+         * (never submit, never reply) so the Pico's relay times out while
+         * the SPI status heartbeat keeps flowing. Exactly the HUNG case a
+         * dumb watchdog IC cannot see. Gated behind Kconfig because an
+         * unconditional trigger string would let anyone DoS the agent via
+         * Telegram in a production build. */
+        if (strstr(text, "__hang__")) {
+            ESP_LOGW(TAG, "[DEBUG] __hang__ received — swallowing request (agent hang sim)");
+            cJSON_Delete(root);
+            break;
+        }
+#endif
 
         uint32_t request_id = 0;
         esp_err_t err = claw_agent_mgr_submit_root_text(
@@ -1065,6 +1125,23 @@ void app_main(void)
         }
         ESP_ERROR_CHECK(gpio_isr_handler_add(PIR_GPIO_PIN, pir_isr_handler, NULL));
         ESP_LOGI(TAG, "PIR sensor GPIO%d ready (debounce=%dms)", PIR_GPIO_PIN, PIR_DEBOUNCE_MS);
+    }
+
+    /* Guardian reset line: the W55RP20 drives this high to reboot a hung agent.
+     * Task first so the handle is valid before the ISR can fire. The ISR service
+     * was already installed by the PIR block above. */
+    xTaskCreate(reset_req_task, "reset_req", 2560, NULL, 6, &s_reset_req_task_handle);
+    {
+        gpio_config_t rr_cfg = {
+            .pin_bit_mask = (1ULL << ESP_RESET_REQ_GPIO),
+            .mode         = GPIO_MODE_INPUT,
+            .pull_up_en   = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_ENABLE,   /* idle low; noise-safe */
+            .intr_type    = GPIO_INTR_POSEDGE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&rr_cfg));
+        ESP_ERROR_CHECK(gpio_isr_handler_add(ESP_RESET_REQ_GPIO, reset_req_isr_handler, NULL));
+        ESP_LOGI(TAG, "[guardian] reset-request line ready on GPIO%d", ESP_RESET_REQ_GPIO);
     }
 #endif /* CONFIG_SPI_CAM_BRIDGE_ENABLE */
 
